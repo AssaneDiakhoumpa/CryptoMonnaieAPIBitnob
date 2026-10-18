@@ -1,16 +1,11 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { FeeSummary } from "@/components/ui/FeeSummary";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ToastProvider, useToast } from "@/components/ui/Toast";
-import {
-  MOCK_TRANSFERS,
-  SUPPORTED_DESTINATIONS,
-} from "@/lib/mock-data";
-import { Transfer, TransferMethod } from "@/types";
+import { CryptoAsset, Transfer, TransferMethod } from "@/types";
 import {
   ArrowRight,
   Smartphone,
@@ -26,97 +21,176 @@ import { cn } from "@/lib/utils";
 function TransfertsContent() {
   const { success, error } = useToast();
 
-  const [transfers, setTransfers] = useState<Transfer[]>(MOCK_TRANSFERS);
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [selectedCountryCode, setSelectedCountryCode] = useState("SN");
   const [amountSent, setAmountSent] = useState<number>(100);
-  const [currencySent, setCurrencySent] = useState("USDT");
+  const [currencySent, setCurrencySent] = useState<CryptoAsset>("USDT");
+  const [currencyReceived, setCurrencyReceived] = useState("");
   const [method, setMethod] = useState<TransferMethod>("mobile_money");
-  const [selectedOperator, setSelectedOperator] = useState("Orange Money");
-  const [phonePrefix, setPhonePrefix] = useState("+221");
-  const [phoneNumber, setPhoneNumber] = useState("77 123 45 67");
-  const [recipientName, setRecipientName] = useState("Sadio Diallo");
-  const [notes, setNotes] = useState("Ex: Paiement fournisseur");
+  const [bankCode, setBankCode] = useState("");
+  const [payoutCountries, setPayoutCountries] = useState<unknown>(null);
+  const [payoutBanks, setPayoutBanks] = useState<unknown>(null);
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [recipientName, setRecipientName] = useState("");
+  const [notes, setNotes] = useState("");
 
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isQuoting, setIsQuoting] = useState(false);
+  const [quote, setQuote] = useState<Record<string, unknown> | null>(null);
 
-  // Active country configuration
-  const currentCountry =
-    SUPPORTED_DESTINATIONS.find((c) => c.countryCode === selectedCountryCode) ||
-    SUPPORTED_DESTINATIONS[0];
+  useEffect(() => {
+    let active = true;
+    fetch("/api/transfers?resource=countries")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Référentiel Bitnob indisponible.");
+        if (active) setPayoutCountries(data);
+      })
+      .catch((referenceError: Error) => error("Pays Bitnob indisponibles", referenceError.message));
+    return () => {
+      active = false;
+    };
+  }, [error]);
 
-  const currentMethodConfig = currentCountry.methods.find(
-    (m) => m.id === method
-  );
-  const availableOperators =
-    currentMethodConfig?.operators || currentCountry.methods[0]?.operators || [];
-
-  // Calculations
-  const rate = currentCountry.rateToUSDT;
-  const grossReceived = amountSent * rate;
-  const estimatedFee = 0.5; // 0.50 USDT
-  const netReceived = (amountSent - estimatedFee) * rate;
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/transfers?resource=banks&country=${encodeURIComponent(selectedCountryCode)}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Référentiel Bitnob indisponible.");
+        if (active) setPayoutBanks(data);
+      })
+      .catch((referenceError: Error) => error("Banques Bitnob indisponibles", referenceError.message));
+    return () => {
+      active = false;
+    };
+  }, [error, selectedCountryCode]);
 
   const handleCountryChange = (code: string) => {
-    setSelectedCountryCode(code);
-    const country = SUPPORTED_DESTINATIONS.find((c) => c.countryCode === code);
-    if (country) {
-      if (code === "SN") setPhonePrefix("+221");
-      else if (code === "CI") setPhonePrefix("+225");
-      else if (code === "BJ") setPhonePrefix("+229");
-      else if (code === "ML") setPhonePrefix("+223");
-      else if (code === "NG") setPhonePrefix("+234");
-      else if (code === "KE") setPhonePrefix("+254");
-
-      const defaultOp = country.methods[0]?.operators[0] || "";
-      setSelectedOperator(defaultOp);
-    }
+    setSelectedCountryCode(code.toUpperCase());
+    setCurrencyReceived("");
+    setBankCode("");
+    setPayoutBanks(null);
   };
 
-  const handleInitiateTransfer = (e: React.FormEvent) => {
+  const handleInitiateTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (amountSent <= 0) {
       error("Montant invalide", "Veuillez saisir un montant supérieur à 0.");
+      return;
+    }
+    if (!bankCode.trim()) {
+      error("Code Bitnob requis", "Saisissez le bank_code exact retourné par le référentiel Bitnob.");
+      return;
+    }
+    if (!/^[A-Z]{2}$/.test(selectedCountryCode) || !/^[A-Z]{3}$/.test(currencyReceived.trim().toUpperCase())) {
+      error("Référentiel incomplet", "Saisissez le pays et la devise tels qu’ils figurent dans les réponses Bitnob affichées.");
       return;
     }
     if (method === "mobile_money" && !phoneNumber.trim()) {
       error("Numéro requis", "Veuillez renseigner le numéro de mobile du bénéficiaire.");
       return;
     }
-    setIsConfirmOpen(true);
+    if (method === "cash_pickup") {
+      error("Méthode indisponible", "Bitnob ne propose pas le retrait Cash pickup sur cette API.");
+      return;
+    }
+
+    setIsQuoting(true);
+    try {
+      const response = await fetch("/api/transfers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "quote",
+          amountSent,
+          currencySent,
+          country: selectedCountryCode,
+          currencyReceived: currencyReceived.trim().toUpperCase(),
+          recipientName: recipientName.trim(),
+          accountNumber:
+            phoneNumber.trim(),
+          bankCode: bankCode.trim(),
+          method,
+          paymentReason: "vendor_payment",
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Bitnob n’a pas retourné de devis.");
+      setQuote(data as Record<string, unknown>);
+      setIsConfirmOpen(true);
+    } catch (quoteError) {
+      error(
+        "Devis indisponible",
+        quoteError instanceof Error ? quoteError.message : "Erreur inconnue."
+      );
+    } finally {
+      setIsQuoting(false);
+    }
   };
 
-  const handleConfirmTransfer = () => {
+  const handleConfirmTransfer = async () => {
     setIsProcessing(true);
-    setTimeout(() => {
+    try {
+      const response = await fetch("/api/transfers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send",
+          amountSent,
+          currencySent,
+          country: selectedCountryCode,
+          currencyReceived: currencyReceived.trim().toUpperCase(),
+          recipientName: recipientName.trim(),
+          accountNumber:
+            phoneNumber.trim(),
+          bankCode: bankCode.trim(),
+          method,
+          paymentReason: "vendor_payment",
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Bitnob n’a pas confirmé le payout.");
+      setQuote(data as Record<string, unknown>);
       const newTransfer: Transfer = {
-        id: `tr-${Date.now()}`,
-        recipientName: recipientName || "Bénéficiaire",
-        recipientCountry: currentCountry.country,
-        countryCode: currentCountry.countryCode,
+        id: String(
+          (data.initialized as Record<string, unknown>)?.id ??
+          (data.finalized as Record<string, unknown>)?.id ??
+          "—"
+        ),
+        recipientName: recipientName.trim(),
+        recipientCountry: selectedCountryCode,
+        countryCode: selectedCountryCode,
         method,
-        operator: selectedOperator,
-        phoneNumber: `${phonePrefix} ${phoneNumber}`,
+        operator: bankCode.trim(),
+        phoneNumber: phoneNumber.trim(),
         amountSent,
-        currencySent: currencySent as any,
-        amountReceived: Math.round(netReceived),
-        currencyReceived: currentCountry.currency,
-        fee: estimatedFee,
-        exchangeRate: rate,
+        currencySent,
+        amountReceived: null,
+        currencyReceived: currencyReceived.trim().toUpperCase(),
+        fee: null,
+        exchangeRate: null,
         status: "processing",
-        date: "À l'instant",
-        estimatedDelivery: "Quelques minutes",
-        notes,
+        date: "—",
+        estimatedDelivery: "Statut fourni par Bitnob",
+        notes: notes || undefined,
       };
 
-      setTransfers([newTransfer, ...transfers]);
-      setIsProcessing(false);
+      setTransfers((current) => [newTransfer, ...current]);
       setIsConfirmOpen(false);
       success(
         "Transfert initié !",
-        `${amountSent} ${currencySent} envoyés vers ${selectedOperator} (${currentCountry.country}).`
+        `${amountSent} ${currencySent} transmis à Bitnob pour ${selectedCountryCode}.`
       );
-    }, 1200);
+    } catch (payoutError) {
+      error(
+        "Transfert refusé",
+        payoutError instanceof Error ? payoutError.message : "Erreur inconnue."
+      );
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -159,7 +233,11 @@ function TransfertsContent() {
                 <div className="w-32 shrink-0">
                   <select
                     value={currencySent}
-                    onChange={(e) => setCurrencySent(e.target.value)}
+                    onChange={(e) => {
+                      if (e.target.value === "BTC" || e.target.value === "USDT" || e.target.value === "USDC") {
+                        setCurrencySent(e.target.value);
+                      }
+                    }}
                     className="w-full px-3 py-2.5 text-sm bg-[#F5F6F9] border border-gray-200 rounded-xl font-bold text-gray-900 outline-none cursor-pointer focus:border-[#F5C200]"
                   >
                     <option value="USDT">USDT</option>
@@ -175,17 +253,28 @@ function TransfertsContent() {
               <label className="block text-xs font-semibold text-gray-700 mb-1.5">
                 Pays de destination
               </label>
-              <select
+              <input
+                required
+                maxLength={2}
                 value={selectedCountryCode}
                 onChange={(e) => handleCountryChange(e.target.value)}
-                className="w-full px-4 py-2.5 text-sm bg-white border border-gray-200 rounded-xl text-gray-900 font-medium outline-none focus:border-[#F5C200] cursor-pointer"
-              >
-                {SUPPORTED_DESTINATIONS.map((c) => (
-                  <option key={c.countryCode} value={c.countryCode}>
-                    {c.flag} {c.country} ({c.currency})
-                  </option>
-                ))}
-              </select>
+                placeholder="Code ISO-2 retourné par Bitnob"
+                className="w-full px-4 py-2.5 text-sm uppercase bg-white border border-gray-200 rounded-xl text-gray-900 font-medium outline-none focus:border-[#F5C200]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                Devise de destination (`to_currency`)
+              </label>
+              <input
+                required
+                maxLength={3}
+                value={currencyReceived}
+                onChange={(e) => setCurrencyReceived(e.target.value.toUpperCase())}
+                placeholder="Code exact du référentiel Bitnob"
+                className="w-full px-4 py-2.5 text-sm uppercase bg-white border border-gray-200 rounded-xl outline-none focus:border-[#F5C200]"
+              />
             </div>
 
             {/* Méthode de réception */}
@@ -193,7 +282,7 @@ function TransfertsContent() {
               <label className="block text-xs font-semibold text-gray-700 mb-2">
                 Méthode de réception
               </label>
-              <div className="grid grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-2 gap-2.5">
                 <button
                   type="button"
                   onClick={() => setMethod("mobile_money")}
@@ -224,12 +313,10 @@ function TransfertsContent() {
 
                 <button
                   type="button"
-                  onClick={() => setMethod("cash_pickup")}
+                  disabled
                   className={cn(
-                    "flex flex-col sm:flex-row items-center justify-center gap-2 p-3 rounded-xl border text-xs font-bold transition-all text-center",
-                    method === "cash_pickup"
-                      ? "bg-[#FFFBEB] border-[#F5C200] text-gray-900 shadow-sm"
-                      : "border-gray-200 text-gray-500 hover:border-gray-300"
+                    "hidden flex-col sm:flex-row items-center justify-center gap-2 p-3 rounded-xl border text-xs font-bold text-center",
+                    "border-gray-200 text-gray-400"
                   )}
                 >
                   <Banknote className="w-4 h-4 text-[#F5C200] shrink-0" />
@@ -238,23 +325,33 @@ function TransfertsContent() {
               </div>
             </div>
 
-            {/* Opérateur */}
             <div>
               <label className="block text-xs font-semibold text-gray-700 mb-1.5">
-                Opérateur
+                Code banque/opérateur Bitnob (`bank_code`)
               </label>
-              <select
-                value={selectedOperator}
-                onChange={(e) => setSelectedOperator(e.target.value)}
-                className="w-full px-4 py-2.5 text-sm bg-white border border-gray-200 rounded-xl text-gray-900 font-medium outline-none focus:border-[#F5C200] cursor-pointer"
-              >
-                {availableOperators.map((op) => (
-                  <option key={op} value={op}>
-                    {op}
-                  </option>
-                ))}
-              </select>
+              <input
+                type="text"
+                required
+                value={bankCode}
+                onChange={(e) => setBankCode(e.target.value)}
+                placeholder="Saisir le code exact du référentiel Bitnob"
+                className="w-full px-4 py-2.5 text-sm bg-white border border-gray-200 rounded-xl outline-none focus:border-[#F5C200]"
+              />
             </div>
+
+            <details className="rounded-xl border border-gray-200 p-3 text-xs">
+              <summary className="cursor-pointer font-semibold text-gray-700">
+                Référentiels Bitnob bruts (à vérifier)
+              </summary>
+              <p className="mt-3 font-semibold">Pays disponibles</p>
+              <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-slate-950 p-2 text-[10px] text-slate-100">
+                {JSON.stringify(payoutCountries, null, 2)}
+              </pre>
+              <p className="mt-3 font-semibold">Banques / opérateurs pour {selectedCountryCode}</p>
+              <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-slate-950 p-2 text-[10px] text-slate-100">
+                {JSON.stringify(payoutBanks, null, 2)}
+              </pre>
+            </details>
 
             {/* Numéro de téléphone or Account */}
             <div>
@@ -266,24 +363,15 @@ function TransfertsContent() {
                   : "Numéro de pièce d'identité (CNI/Passeport)"}
               </label>
               <div className="flex gap-2">
-                {method === "mobile_money" && (
-                  <div className="w-24 shrink-0">
-                    <input
-                      type="text"
-                      readOnly
-                      value={phonePrefix}
-                      className="w-full px-3 py-2.5 text-sm bg-[#F5F6F9] border border-gray-200 rounded-xl font-medium text-gray-700 text-center outline-none"
-                    />
-                  </div>
-                )}
                 <input
+                  required
                   type="text"
                   value={phoneNumber}
                   onChange={(e) => setPhoneNumber(e.target.value)}
                   placeholder={
                     method === "mobile_money"
-                      ? "77 123 45 67"
-                      : "SN08 0100 1020 3040 50"
+                      ? "+221771234567"
+                      : "IBAN / numéro de compte"
                   }
                   className="flex-1 px-4 py-2.5 text-sm bg-white border border-gray-200 focus:border-[#F5C200] focus:ring-2 focus:ring-[#F5C200]/20 rounded-xl text-gray-900 outline-none"
                 />
@@ -322,9 +410,10 @@ function TransfertsContent() {
             <div className="pt-2">
               <button
                 type="submit"
-                className="w-full py-3.5 px-6 rounded-xl bg-[#F5C200] hover:bg-[#E5B500] text-[#0f172a] font-extrabold text-sm shadow-md shadow-[#F5C200]/25 transition-all duration-150 transform active:scale-[0.99] flex items-center justify-center gap-2"
+                disabled={isQuoting}
+                className="w-full py-3.5 px-6 rounded-xl bg-[#F5C200] hover:bg-[#E5B500] text-[#0f172a] font-extrabold text-sm shadow-md shadow-[#F5C200]/25 transition-all duration-150 transform active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-60"
               >
-                <span>Continuer</span>
+              <span>{isQuoting ? "Demande du devis..." : "Obtenir un devis Bitnob"}</span>
                 <ArrowRight className="w-4 h-4 stroke-[3]" />
               </button>
             </div>
@@ -334,29 +423,26 @@ function TransfertsContent() {
         {/* Right side: Résumé du transfert + Transferts récents */}
         <div className="lg:col-span-5 space-y-6">
           {/* Résumé du transfert (Mockup Screen 3 Top Right) */}
-          <FeeSummary
-            amountSent={amountSent}
-            currencySent={currencySent}
-            fiatEquivalent={grossReceived}
-            fiatCurrency={currentCountry.currency}
-            amountReceived={netReceived}
-            currencyReceived={currentCountry.currency}
-            estimatedFee={estimatedFee}
-            feeCurrency={currencySent}
-            exchangeRate={rate}
-            exchangeRateText={`1 ${currencySent} = ${rate.toLocaleString("fr-FR")} ${currentCountry.currency}`}
-            estimatedDelivery="Quelques minutes"
-          />
+          <div className="bg-white p-6 rounded-2xl border border-[#EAECEF] shadow-sm">
+            <h3 className="text-base font-bold text-gray-900">Réponse Bitnob</h3>
+            <p className="text-xs text-gray-500 mt-1">
+              Le JSON brut reçu du devis ou du dernier payout est affiché ci-dessous.
+            </p>
+            {quote ? (
+              <pre className="mt-3 max-h-64 overflow-auto rounded-xl bg-slate-950 p-3 text-[11px] text-slate-100">
+                {JSON.stringify(quote, null, 2)}
+              </pre>
+            ) : (
+              <p className="mt-4 text-sm text-gray-500">Demandez un devis pour afficher les conditions.</p>
+            )}
+          </div>
 
-          {/* Transferts récents (Mockup Screen 3 Bottom Right) */}
+          {/* Transferts récents */}
           <div className="bg-white p-6 rounded-2xl border border-[#EAECEF] shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-bold text-gray-900">
                 Transferts récents
               </h3>
-              <button className="text-xs font-bold text-gray-700 hover:text-black">
-                Voir tout →
-              </button>
             </div>
 
             <div className="divide-y divide-gray-100">
@@ -367,11 +453,7 @@ function TransfertsContent() {
                 >
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-600 font-bold flex items-center justify-center shrink-0">
-                      {tr.countryCode === "SN"
-                        ? "🇸🇳"
-                        : tr.countryCode === "ML"
-                        ? "🇲🇱"
-                        : "🌍"}
+                      <span className="text-[9px]">{tr.countryCode}</span>
                     </div>
                     <div>
                       <div className="font-bold text-gray-900">
@@ -389,8 +471,9 @@ function TransfertsContent() {
                         {tr.amountSent} {tr.currencySent}
                       </div>
                       <div className="text-[11px] text-gray-400">
-                        {tr.amountReceived.toLocaleString("fr-FR")}{" "}
-                        {tr.currencyReceived}
+                        {tr.amountReceived === null
+                          ? "Montant à confirmer"
+                          : `${tr.amountReceived.toLocaleString("fr-FR")} ${tr.currencyReceived}`}
                       </div>
                     </div>
                     <StatusBadge status={tr.status} size="sm" />
@@ -409,7 +492,7 @@ function TransfertsContent() {
         onConfirm={handleConfirmTransfer}
         isLoading={isProcessing}
         title="Confirmer l'envoi du transfert"
-        description={`Vous êtes sur le point d'envoyer ${amountSent} ${currencySent} vers ${recipientName} (${selectedOperator} - ${currentCountry.country}). Le bénéficiaire recevra environ ${Math.round(netReceived).toLocaleString("fr-FR")} ${currentCountry.currency}.`}
+        description={`Le payout est irréversible. La route d’exécution demande un nouveau devis Bitnob : relisez la réponse affichée et confirmez uniquement si les conditions sont acceptables.`}
         confirmLabel="Confirmer le transfert"
         cancelLabel="Vérifier les détails"
         variant="primary"

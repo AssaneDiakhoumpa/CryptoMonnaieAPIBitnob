@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.bitnob import lightning as ln
 from app.bitnob.client import BitnobClient
+from app.config import get_settings
 from app.deps import get_client, require_api_key
 from app.schemas import InvoiceIn
 
@@ -19,10 +20,11 @@ def _qr(request: str):
 
 @router.post("", status_code=201)
 async def create_invoice(body: InvoiceIn, c: BitnobClient = Depends(get_client)):
+    customer_id = body.customer_id or get_settings().bitnob_customer_id or None
     inv = await ln.create_invoice(
         c, amount_sat=body.amount_sat, description=body.description,
         reference=body.reference, expiry_seconds=body.expiry_seconds,
-        customer_id=body.customer_id,
+        customer_id=customer_id,
     )
     qr = _qr(inv["request"])
     return {**inv, "qr_svg_data_uri": qr.svg_data_uri(scale=6), "qr_png_data_uri": qr.png_data_uri(scale=6)}

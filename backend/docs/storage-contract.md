@@ -1,25 +1,45 @@
-# Contrat de stockage (pour la personne en charge de Supabase)
+# Contrat de stockage PostgreSQL
 
-Le backend ne dépend que de l'interface `BatchRepository` (`app/repo/base.py`).
-Il suffit d'implémenter `app/repo/supabase.py` puis de mettre `STORAGE_BACKEND=supabase`.
-Aucun autre fichier du backend n'est à modifier. En attendant, `MemoryRepo` fait tourner tout le flux.
+Le backend dépend de l'interface `BatchRepository` (`app/repo/base.py`).
+Quand `DATABASE_URL` est renseignée, `SupabaseRepo` utilise PostgreSQL via psycopg asynchrone ;
+sans cette variable, `MemoryRepo` est utilisé pour les tests et le développement local.
+Le schéma doit avoir été migré avec `db/scripts/migrate.py` avant de démarrer le backend.
 
-## Méthodes à implémenter (toutes `async`, `save_*` = upsert sur `id`)
+## Méthodes (toutes `async`)
 | Méthode | Comportement |
 |---|---|
-| `create_batch(batch, payouts)` | Insère le batch et ses payouts (idéalement en une transaction) |
+| `create_batch(batch, payouts)` | Insère le lot, les bénéficiaires et les lignes de paiement dans une transaction |
 | `get_batch(id)` / `list_batches()` | `list_batches` : plus récent d'abord |
-| `save_batch(batch)` | Upsert ; mettre `updated_at` à now |
+| `save_batch(batch)` | Met à jour le statut et les dates du lot |
 | `get_payout(id)` / `list_payouts(batch_id=None)` | Triés par `line` ; sans `batch_id` = tous |
-| `save_payout(payout)` | Upsert ; mettre `updated_at` à now |
-| `find_payout(reference=..., bitnob_payout_id=...)` | Retrouve un payout (webhooks) ; `reference` est unique |
+| `save_payout(payout)` | Enregistre les identifiants et la réponse de cotation de la tentative courante |
+| `start_payout_attempt(payout_id)` | Appelle la fonction SQL `start_payout_attempt()` et renvoie la référence d'essai |
+| `apply_payout_status(payout, origin, event_id)` | Appelle `apply_payout_event()` ; la réussite n'est acceptée que depuis un webhook |
+| `find_payout(reference=..., bitnob_payout_id=...)` | Retrouve une ligne à partir de sa référence de ligne/essai ou de l'identifiant Bitnob |
+| `register_webhook_event(...)` | Insère l'événement une fois dans `webhook_events` |
+| `finish_webhook_event(event_id)` | Renseigne `processed_at` après traitement |
+
+## Correspondance avec PostgreSQL
+
+`Batch` est stocké dans `batches`, les coordonnées bénéficiaires dans `beneficiaries`,
+la ligne du paiement dans `payouts`, et chaque tentative dans `payout_attempts`.
+Les montants décimaux du backend sont convertis en unités minimales entières via l'exposant
+de `currencies`. Les références d'essai et les statuts finaux sont gérés par les fonctions
+et déclencheurs SQL de la migration v3, pas par un upsert de la ligne métier.
+La réponse Bitnob de cotation est conservée en JSON ; `source_minor` et `fee_source_minor`
+restent NULL tant que les unités exactes de ces champs n'ont pas été confirmées.
+
+L'API actuelle utilise un seul `X-API-Key` partagé. Pour satisfaire `owner_id`, le repository
+exige exactement un utilisateur `admin` actif dans `users` ; il échoue explicitement si
+aucun ou plusieurs administrateurs sont actifs. Une future authentification multi-utilisateur
+devra fournir l'identité du propriétaire au repository.
 
 ## Entité `Batch`
 | Champ | Type | Notes |
 |---|---|---|
 | id | uuid (texte) | généré par le backend |
 | name | texte | |
-| status | texte | DRAFT, RUNNING, COMPLETED, PARTIAL, FAILED |
+| status | texte | DRAFT, VALIDATED, RUNNING, COMPLETED, PARTIAL, FAILED, CANCELLED |
 | from_asset | texte | BTC, USDT ou USDC |
 | payment_reason | texte | |
 | created_at, updated_at | timestamptz | |
@@ -43,15 +63,19 @@ Aucun autre fichier du backend n'est à modifier. En attendant, `MemoryRepo` fai
 | quote_id, bitnob_payout_id | texte, nullable | `bitnob_payout_id` à indexer |
 | quote | json, nullable | réponse brute de Bitnob |
 | fee | numeric, nullable | |
-| error, error_stage | texte, nullable | stage : quote, initialize ou finalize |
+| error, error_stage | texte, nullable | stage restitué depuis `failure_reason` lorsque disponible |
 | created_at, updated_at | timestamptz | |
 | completed_at | timestamptz, nullable | |
 
 Index utiles : `payouts(batch_id)`, `payouts(reference)` unique, `payouts(bitnob_payout_id)`, `payouts(status)`, `payouts(created_at)`.
 
-## Pas encore dans le repository (restent en mémoire)
-Enveloppes, alertes et clients KYC (`app/services/envelopes.py`). Si la DB doit les porter,
-dire à P1 : on ajoutera une interface `EnvelopeRepository` sur le même modèle.
+## Hors périmètre de cette intégration
+
+Les routes de factures ne lisent/écrivent pas encore la table `invoices`. Les enveloppes,
+alertes et clients KYC restent dans `app/services/envelopes.py` et ne sont pas persistés.
+Leur intégration nécessite un contrat d'échange complémentaire, notamment pour les champs
+client requis par `invoices` et pour l'événement Bitnob qui confirme une facture payée ;
+ces valeurs ne sont pas déduites ici.
 
 ## Vues pour le tableau de bord et l'assistant IA
 `GET /dashboard/summary` est aujourd'hui calculé en Python (`app/services/dashboard.py`).

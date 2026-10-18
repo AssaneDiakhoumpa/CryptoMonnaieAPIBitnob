@@ -32,7 +32,43 @@
   quote_id, reference). Les reponses reelles n'ont jamais ete vues : elles sont loggees.
 - Payouts : devis, initialize, finalize. Statuts : QUOTE, INITIATED, PENDING, COMPLETED ou FAILED.
   Le devis expire vite. finalize = debit irreversible et exige un solde (CONFIRM_PAYOUT=true pour l'autoriser).
-- Senegal (SN) : pris en charge ; devise, operateurs et motifs non lus (GET /api/payouts/supported-countries/SN, /banks/SN, /limits).
+- Senegal (SN) : exigences pays observees dans la reponse fournie le 2026-10-18T12:04:07.095278505Z ; les banques ont ete relues le 2026-10-18T14:09:07.589177857Z.
+- Extrait brut pertinent des exigences SN :
+```json
+{
+  "success": true,
+  "message": "Country requirements retrieved successfully",
+  "data": {
+    "code": "SN",
+    "name": "Senegal",
+    "dial_code": "221",
+    "destination_types": {
+      "mobile_money": {
+        "fields": [
+          {"key": "account_name", "required": true},
+          {"key": "account_number", "required": true, "pattern": "^(\\+?221[7]\\d{8}|[7]\\d{8})$"},
+          {"key": "network", "required": true, "options": [
+            {"label": "Orange", "value": "orange"},
+            {"label": "Free", "value": "free"},
+            {"label": "Expresso", "value": "expresso"},
+            {"label": "Wave", "value": "wave"}
+          ]},
+          {"key": "sender", "required": true}
+        ],
+        "banks": [],
+        "limits": {"min_amount": "100", "max_amount": "200000", "currency": "XOF"}
+      },
+      "swift": {
+        "label": "International Wire (SWIFT)",
+        "limits": {"min_amount": "1", "max_amount": "2000000", "currency": "USD"}
+      }
+    }
+  },
+  "timestamp": "2026-10-18T12:04:07.095278505Z"
+}
+```
+- Reponse brute `GET /payouts/banks/SN` : `{"success":true,"message":"Banks retrieved successfully","data":{"banks":null,"country_code":"SN","country_name":"Senegal","total":0},"timestamp":"2026-10-18T14:09:07.589177857Z"}`.
+- Le sens de `network` par rapport a `Beneficiary.bank_code` n'est pas confirme ; ne pas envoyer les valeurs Orange/Free/Expresso/Wave comme `bank_code` sans preuve.
 
 ## Limites de la sandbox
 - Soldes a 0 (BTC, USDT, USDC). Pas de moyen connu de financer le BTC.

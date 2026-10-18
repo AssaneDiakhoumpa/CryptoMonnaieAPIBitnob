@@ -1,11 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { InvoicePreviewCard } from "@/components/invoices/InvoicePreviewCard";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ToastProvider, useToast } from "@/components/ui/Toast";
-import { MOCK_INVOICES } from "@/lib/mock-data";
 import { CryptoAsset, Invoice } from "@/types";
 import {
   Plus,
@@ -22,76 +21,105 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+interface BackendInvoice {
+  id: string;
+  reference: string;
+  amountSat: number;
+  status: string;
+  description: string;
+  expiresAt?: string;
+}
+
+function toInvoice(invoice: BackendInvoice): Invoice {
+  const statuses = ["pending", "paid", "expired", "failed"] as const;
+  const status = statuses.includes(invoice.status as (typeof statuses)[number])
+    ? (invoice.status as Invoice["status"])
+    : "pending";
+  return {
+    id: invoice.id,
+    invoiceNumber: invoice.reference,
+    clientName: "Client",
+    description: invoice.description,
+    amount: invoice.amountSat / 100_000_000,
+    currency: "BTC",
+    acceptedCryptos: ["BTC"],
+    status,
+    createdAt: "",
+    shareableUrl: `/pay/${encodeURIComponent(invoice.id)}`,
+  };
+}
+
 function FacturesContent() {
   const { success, error } = useToast();
   const [activeTab, setActiveTab] = useState<"create" | "list">("create");
-  const [invoices, setInvoices] = useState<Invoice[]>(MOCK_INVOICES);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
 
   // Form state
   const [clientName, setClientName] = useState("TechStudio NG");
   const [description, setDescription] = useState("Logo Design");
-  const [amount, setAmount] = useState<number>(50);
-  const [currency, setCurrency] = useState("USD");
-  const [acceptedCryptos, setAcceptedCryptos] = useState<CryptoAsset[]>([
-    "BTC",
-    "USDT",
-    "USDC",
-  ]);
-  const [dueDate, setDueDate] = useState("2026-10-25");
-  const [notes, setNotes] = useState("");
-  const [invoiceNumber, setInvoiceNumber] = useState("SP-1042");
+  const [amount, setAmount] = useState<number>(10_000);
+  const currency = "BTC";
+  const acceptedCryptos: CryptoAsset[] = ["BTC"];
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [shareableInvoiceId, setShareableInvoiceId] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   // Search and filter for invoices list
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
-  const handleToggleCrypto = (asset: CryptoAsset) => {
-    if (acceptedCryptos.includes(asset)) {
-      if (acceptedCryptos.length === 1) {
-        error("Action impossible", "Vous devez accepter au moins une crypto.");
-        return;
-      }
-      setAcceptedCryptos(acceptedCryptos.filter((c) => c !== asset));
-    } else {
-      setAcceptedCryptos([...acceptedCryptos, asset]);
-    }
-  };
+  useEffect(() => {
+    let active = true;
+    fetch("/api/invoices")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Impossible de charger les factures.");
+        return data.invoices as BackendInvoice[];
+      })
+      .then((items) => {
+        if (active) setInvoices(items.map(toInvoice));
+      })
+      .catch((loadFailure: Error) => {
+        if (active) setLoadError(loadFailure.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
-  const handleGenerateInvoice = (e: React.FormEvent) => {
+  const handleGenerateInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!clientName.trim() || !description.trim() || amount <= 0) {
-      error("Champs obligatoires", "Veuillez remplir le nom, la description et un montant valide.");
+    if (!clientName.trim() || !description.trim() || !Number.isSafeInteger(amount) || amount <= 0) {
+      error("Champs obligatoires", "Veuillez saisir un client, une description et un montant entier en satoshis.");
       return;
     }
 
     setIsSubmitting(true);
-    setTimeout(() => {
-      const newInvNumber = `SP-${Math.floor(1000 + Math.random() * 9000)}`;
-      setInvoiceNumber(newInvNumber);
-
-      const newInvoice: Invoice = {
-        id: `inv-${Date.now()}`,
-        invoiceNumber: newInvNumber,
-        clientName,
-        description,
-        amount,
-        currency: currency as any,
-        acceptedCryptos,
-        dueDate: dueDate || undefined,
-        notes: notes || undefined,
-        status: "pending",
-        createdAt: new Date().toISOString(),
-        shareableUrl: `https://sunupay.io/pay/${newInvNumber}`,
-      };
-
-      setInvoices([newInvoice, ...invoices]);
-      setIsSubmitting(false);
-      success(
-        "Facture créée avec succès !",
-        `Le lien de paiement pour ${clientName} (${amount} ${currency}) est disponible.`
+    try {
+      const response = await fetch("/api/invoices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountSat: amount,
+          description: `${clientName.trim()} — ${description.trim()}`,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "La facture n’a pas pu être créée.");
+      const newInvoice = toInvoice(data.invoice as BackendInvoice);
+      setInvoiceNumber(newInvoice.invoiceNumber);
+      setShareableInvoiceId(newInvoice.id);
+      setInvoices((current) => [newInvoice, ...current]);
+      success("Facture créée", `Facture Lightning de ${amount} satoshis créée pour ${clientName}.`);
+    } catch (createError) {
+      error(
+        "Création impossible",
+        createError instanceof Error ? createError.message : "Erreur inconnue."
       );
-    }, 600);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const filteredInvoices = invoices.filter((inv) => {
@@ -106,7 +134,9 @@ function FacturesContent() {
     return matchesSearch && matchesStatus;
   });
 
-  const currentShareableUrl = `https://sunupay.io/pay/${invoiceNumber}`;
+  const currentShareableUrl = invoiceNumber
+    ? `/pay/${encodeURIComponent(shareableInvoiceId)}`
+    : "";
 
   return (
     <div className="space-y-6">
@@ -118,7 +148,7 @@ function FacturesContent() {
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             {activeTab === "create"
-              ? "Générez un lien de paiement pour recevoir des paiements en Bitcoin ou stablecoins."
+              ? "Générez une facture Lightning payable en Bitcoin avec un montant saisi en satoshis."
               : "Suivez l'état de règlement de vos factures et encaissements clients."}
           </p>
         </div>
@@ -195,7 +225,7 @@ function FacturesContent() {
               {/* Montant & Devise */}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-1.5">
-                  Montant <span className="text-amber-500">*</span>
+                  Montant en satoshis <span className="text-amber-500">*</span>
                 </label>
                 <div className="flex gap-2">
                   <div className="relative flex-1">
@@ -203,24 +233,16 @@ function FacturesContent() {
                       type="number"
                       required
                       min="1"
-                      step="any"
+                      max="20000000"
+                      step="1"
                       value={amount || ""}
                       onChange={(e) => setAmount(parseFloat(e.target.value) || 0)}
-                      placeholder="50"
+                      placeholder="10000"
                       className="w-full px-4 py-2.5 text-sm bg-white border border-gray-200 focus:border-[#F5C200] focus:ring-2 focus:ring-[#F5C200]/20 rounded-xl text-gray-900 outline-none transition-all"
                     />
                   </div>
-                  <div className="w-28 shrink-0">
-                    <select
-                      value={currency}
-                      onChange={(e) => setCurrency(e.target.value)}
-                      className="w-full px-3 py-2.5 text-sm bg-[#F5F6F9] border border-gray-200 rounded-xl font-medium text-gray-800 outline-none cursor-pointer focus:border-[#F5C200]"
-                    >
-                      <option value="USD">USD ($)</option>
-                      <option value="EUR">EUR (€)</option>
-                      <option value="USDT">USDT</option>
-                      <option value="USDC">USDC</option>
-                    </select>
+                  <div className="w-28 shrink-0 flex items-center justify-center rounded-xl bg-[#F5F6F9] text-sm font-bold text-gray-800">
+                    Sats (BTC)
                   </div>
                 </div>
               </div>
@@ -233,7 +255,6 @@ function FacturesContent() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                   {/* Bitcoin */}
                   <label
-                    onClick={() => handleToggleCrypto("BTC")}
                     className={cn(
                       "flex items-center gap-2.5 p-3 rounded-xl border text-xs font-medium cursor-pointer transition-all",
                       acceptedCryptos.includes("BTC")
@@ -244,7 +265,7 @@ function FacturesContent() {
                     <input
                       type="checkbox"
                       checked={acceptedCryptos.includes("BTC")}
-                      onChange={() => {}}
+                      disabled
                       className="w-4 h-4 text-[#F5C200] rounded accent-[#F5C200]"
                     />
                     <span>Bitcoin (BTC)</span>
@@ -252,7 +273,6 @@ function FacturesContent() {
 
                   {/* USDT */}
                   <label
-                    onClick={() => handleToggleCrypto("USDT")}
                     className={cn(
                       "flex items-center gap-2.5 p-3 rounded-xl border text-xs font-medium cursor-pointer transition-all",
                       acceptedCryptos.includes("USDT")
@@ -263,7 +283,7 @@ function FacturesContent() {
                     <input
                       type="checkbox"
                       checked={acceptedCryptos.includes("USDT")}
-                      onChange={() => {}}
+                      disabled
                       className="w-4 h-4 text-[#F5C200] rounded accent-[#F5C200]"
                     />
                     <span>USDT (TRC20/ERC20)</span>
@@ -271,7 +291,6 @@ function FacturesContent() {
 
                   {/* USDC */}
                   <label
-                    onClick={() => handleToggleCrypto("USDC")}
                     className={cn(
                       "flex items-center gap-2.5 p-3 rounded-xl border text-xs font-medium cursor-pointer transition-all",
                       acceptedCryptos.includes("USDC")
@@ -282,41 +301,12 @@ function FacturesContent() {
                     <input
                       type="checkbox"
                       checked={acceptedCryptos.includes("USDC")}
-                      onChange={() => {}}
+                      disabled
                       className="w-4 h-4 text-[#F5C200] rounded accent-[#F5C200]"
                     />
                     <span>USDC (ERC20)</span>
                   </label>
                 </div>
-              </div>
-
-              {/* Date d'échéance (optionnel) */}
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1.5">
-                  Date d&apos;échéance (optionnel)
-                </label>
-                <div className="relative">
-                  <input
-                    type="date"
-                    value={dueDate}
-                    onChange={(e) => setDueDate(e.target.value)}
-                    className="w-full px-4 py-2.5 text-sm bg-white border border-gray-200 focus:border-[#F5C200] focus:ring-2 focus:ring-[#F5C200]/20 rounded-xl text-gray-900 outline-none transition-all"
-                  />
-                </div>
-              </div>
-
-              {/* Notes (optionnel) */}
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1.5">
-                  Notes (optionnel)
-                </label>
-                <textarea
-                  rows={2}
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Ajoutez une note pour votre client..."
-                  className="w-full px-4 py-2.5 text-sm bg-white border border-gray-200 focus:border-[#F5C200] focus:ring-2 focus:ring-[#F5C200]/20 rounded-xl text-gray-900 placeholder-gray-400 outline-none transition-all resize-none"
-                />
               </div>
 
               {/* Submit Button */}
@@ -351,7 +341,7 @@ function FacturesContent() {
               invoiceNumber={invoiceNumber}
               clientName={clientName}
               description={description}
-              amount={amount}
+              amount={amount / 100_000_000}
               currency={currency}
               acceptedCryptos={acceptedCryptos}
               shareableUrl={currentShareableUrl}
@@ -361,6 +351,11 @@ function FacturesContent() {
       ) : (
         /* Invoices List View */
         <div className="bg-white rounded-2xl border border-[#EAECEF] p-6 shadow-sm space-y-6">
+          {loadError && (
+            <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-700">
+              {loadError}
+            </p>
+          )}
           {/* Filters Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="relative flex-1 max-w-md">
@@ -424,7 +419,7 @@ function FacturesContent() {
                       <div className="text-xs text-gray-500">{inv.description}</div>
                     </td>
                     <td className="py-4 px-4 font-bold text-gray-900">
-                      ${inv.amount.toFixed(2)} {inv.currency}
+                      {Math.round(inv.amount * 100_000_000).toLocaleString("fr-FR")} sats
                     </td>
                     <td className="py-4 px-4">
                       <div className="flex items-center gap-1.5">

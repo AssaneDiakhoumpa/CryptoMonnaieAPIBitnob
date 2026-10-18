@@ -57,10 +57,10 @@ export interface Transfer {
   accountNumber?: string;
   amountSent: number;
   currencySent: CryptoAsset | FiatCurrency;
-  amountReceived: number;
+  amountReceived: number | null;
   currencyReceived: string;
-  fee: number;
-  exchangeRate: number;
+  fee: number | null;
+  exchangeRate: number | null;
   status: TransferStatus;
   date: string;
   estimatedDelivery: string;
@@ -69,15 +69,15 @@ export interface Transfer {
 
 export interface VirtualCard {
   id: string;
-  cardNumber: string;
+  cardNumber?: string;
   maskedNumber: string;
   last4: string;
   cardHolder: string;
-  expiryDate: string;
-  cvv: string;
-  brand: "mastercard" | "visa";
+  expiryDate?: string;
+  cvv?: string;
+  brand: "mastercard" | "visa" | "unknown";
   cardType: "virtual" | "physical";
-  status: "active" | "frozen" | "cancelled";
+  status: "active" | "frozen" | "cancelled" | "unknown";
   balance: number;
   monthlyLimit: number;
   spentThisMonth: number;
@@ -108,7 +108,7 @@ export interface AssistantMessage {
 }
 
 export type BulkBatchStatus = "draft" | "validated" | "processing" | "completed" | "partial" | "failed";
-export type BulkItemStatus = "valid" | "invalid" | "pending" | "processing" | "completed" | "failed";
+export type BulkItemStatus = "valid" | "invalid" | "pending" | "processing" | "completed" | "failed" | "uncertain";
 
 export interface BulkRecipientItem {
   id: string;
@@ -118,7 +118,7 @@ export interface BulkRecipientItem {
   country: string; // 'SN' | 'NG' | 'GH' | 'CI'
   currency: string; // 'XOF' | 'NGN' | 'GHS'
   amount: number; // in local fiat
-  amountUSDT: number;
+  amountUSDT?: number;
   operator: string;
   status: BulkItemStatus;
   errorMessage?: string;
@@ -140,4 +140,3 @@ export interface BulkBatch {
   completedAt?: string;
   items: BulkRecipientItem[];
 }
-

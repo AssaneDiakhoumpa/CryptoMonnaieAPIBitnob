@@ -28,13 +28,25 @@ def _valid_signature(raw: bytes, header: str) -> bool:
     return hmac.compare_digest(expected, header.strip().lower())
 
 
-async def _safe(coro, label: str) -> None:
+async def _safe(coro, label: str) -> bool:
     try:
         await coro
     except BitnobError as e:
         log.error("%s a échoué : %s", label, e.payload)
+        return False
     except Exception:  # ne jamais faire planter la tâche de fond
         log.exception("%s a échoué", label)
+        return False
+    return True
+
+
+def _without_preimage(value):
+    if isinstance(value, dict):
+        return {key: _without_preimage(item) for key, item in value.items()
+                if key.lower() != "preimage"}
+    if isinstance(value, list):
+        return [_without_preimage(item) for item in value]
+    return value
 
 
 def register_event(payload: dict) -> str:
@@ -47,16 +59,19 @@ def register_event(payload: dict) -> str:
     return "new"
 
 
-async def dispatch(client: BitnobClient, payload: dict) -> None:
+async def dispatch(client: BitnobClient, payload: dict, event_id: str | None = None) -> None:
     """Traite un événement Bitnob (réel ou simulé)."""
     event = payload.get("event", "")
     data = payload.get("data", payload)
+    processed = True
 
     # ---------------- Payouts ----------------
     if event.startswith("payouts."):
         # Se baser sur `event`, pas sur data.status
         log.info("%s %s", event, data.get("reference"))
-        await _safe(bulk.apply_webhook(get_repo(), event, data), "payout webhook")
+        processed = await _safe(
+            bulk.apply_webhook(get_repo(), event, data, event_id), "payout webhook"
+        )
 
     # ---------------- KYC carte ----------------
     elif event.startswith("virtualcard.user.kyc."):
@@ -72,7 +87,7 @@ async def dispatch(client: BitnobClient, payload: dict) -> None:
     elif event.startswith("virtualcard."):
         card_id = data.get("cardId") or data.get("id")
         if event == "virtualcard.topup.completed":
-            await _safe(env_svc.on_topup_completed(client, card_id), "topup")
+            processed = await _safe(env_svc.on_topup_completed(client, card_id), "topup")
         elif event == "virtualcard.topup.failed":
             env_svc.add_alert(card_id, "warning", "Recharge de la carte échouée.")
         elif event.startswith("virtualcard.transaction.declined"):
@@ -81,21 +96,43 @@ async def dispatch(client: BitnobClient, payload: dict) -> None:
         elif event.startswith("virtualcard.transaction."):
             # debit / authorization / settlement / contactless / crossborder / refund...
             log.info("%s %s %s", event, data.get("merchantName"), data.get("displayAmount"))
-            await _safe(env_svc.check_card_balance(client, card_id), "check_balance")
+            processed = await _safe(env_svc.check_card_balance(client, card_id), "check_balance")
         else:
             log.info("événement carte: %s", event)
     else:
         log.info("événement non géré: %s", event)
+    if processed and event_id:
+        await get_repo().finish_webhook_event(event_id)
 
 
 @router.post("/bitnob")
 async def bitnob_webhook(request: Request, background: BackgroundTasks):
     raw = await request.body()
     sig = request.headers.get("x-bitnob-signature", "")
-    if not sig or not _valid_signature(raw, sig):
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid webhook body")
+    event_id = (payload.get("eventId") or payload.get("event_id")
+                or request.headers.get("x-bitnob-event-id"))
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Missing event id")
+    signature_valid = bool(sig and _valid_signature(raw, sig))
+    data = payload.get("data", payload)
+    reference = data.get("reference") if isinstance(data, dict) else None
+    if not signature_valid:
+        if get_settings().database_url:
+            await get_repo().register_webhook_event(
+                str(event_id), str(payload.get("event", "")), reference,
+                _without_preimage(payload), False,
+            )
         raise HTTPException(status_code=401, detail="Invalid signature")
-    payload = json.loads(raw)
-    if register_event(payload) == "duplicate":
+    if not await get_repo().register_webhook_event(
+        str(event_id), str(payload.get("event", "")), reference,
+        _without_preimage(payload), True,
+    ):
         return {"status": "duplicate"}
-    background.add_task(dispatch, request.app.state.bitnob, payload)  # on répond vite
+    background.add_task(dispatch, request.app.state.bitnob, payload, str(event_id))
     return {"status": "ok"}

@@ -8,8 +8,11 @@ class Settings(BaseSettings):
     bitnob_client_id: str = ""
     bitnob_client_secret: str = ""
     bitnob_base_url: str = "https://api.bitnob.com"
+    bitnob_customer_id: str = ""
+    database_url: str = ""
     public_base_url: str = ""
     app_api_key: str = "change-me"
+    confirm_payout: bool = False
 
     default_card_customer_id: str = ""
     alert_threshold_usd: float = 10.0
@@ -21,7 +24,6 @@ class Settings(BaseSettings):
     mock_invoice_pay_seconds: float = 0.0  # >0 : les factures se paient seules après N s
 
     # Paiements de masse
-    storage_backend: str = "memory"   # "memory" | "supabase" (implémenté par la personne DB)
     bulk_concurrency: int = 3         # payouts traités en parallèle
     bulk_max_rows: int = 500
 

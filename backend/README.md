@@ -55,9 +55,25 @@ Passer au vrai Bitnob = `BITNOB_MOCK=false` + vos identifiants, rien d'autre à 
 **Outils du mode simulé :** `GET /mock/state`, `POST /mock/credit {"currency":"USDC","amount":500}` (le « faucet » qui manque au sandbox), `POST /mock/reset` (tout remettre à zéro avant une démo), `POST /invoices/{id}/simulate-paid`, `POST /cards/{id}/simulate/settlement?amount_usd=25`.
 Frontend : afficher un bandeau « MODE SIMULÉ » quand `GET /health` renvoie `"mode":"mock"`.
 
+## Persistance PostgreSQL / Supabase
+
+Sans `DATABASE_URL`, les lots et paiements utilisent `MemoryRepo` et sont perdus au redémarrage.
+Pour activer la persistance, renseigner `DATABASE_URL` dans `backend/.env` et appliquer les
+migrations du dossier `db` avant de démarrer l'API. La chaîne de connexion ne doit pas être
+commise. Le backend s'appuie sur les fonctions SQL de la migration v3 pour créer les tentatives
+et faire évoluer les statuts ; en mode PostgreSQL, la base refuse de marquer un payout réussi à
+partir d'un simple polling API.
+
+Cette première intégration persiste les lots, bénéficiaires, paiements et webhooks. Les factures,
+enveloppes, alertes et clients KYC ne sont pas encore persistés.
+
+Comme l'API actuelle utilise une clé partagée et non une identité utilisateur, la base doit
+contenir exactement un administrateur actif dans `users`. La route `/health` inclut `db: true`
+quand la connexion configurée répond, et `db: false` sinon ou en mode mémoire.
+
 ## Documentation pour l'équipe
 - `docs/api-contract.md` : tous les endpoints (frontend, IA)
-- `docs/storage-contract.md` : ce que la DB doit implémenter (Supabase)
+- `docs/storage-contract.md` : contrat de stockage PostgreSQL
 - `docs/example_beneficiaries.csv` : fichier d'exemple
 
 ## Endpoints cartes et factures

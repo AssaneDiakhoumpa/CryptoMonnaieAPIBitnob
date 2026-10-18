@@ -6,8 +6,8 @@ from app.repo.base import BatchRepository
 
 @lru_cache
 def get_repo() -> BatchRepository:
-    if get_settings().storage_backend == "supabase":
+    if get_settings().database_url:
         from app.repo.supabase import SupabaseRepo
-        return SupabaseRepo()
+        return SupabaseRepo(get_settings().database_url)
     from app.repo.memory import MemoryRepo
     return MemoryRepo()

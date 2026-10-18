@@ -14,6 +14,7 @@ os.environ.update(BITNOB_CLIENT_ID=CID, BITNOB_CLIENT_SECRET=SECRET, APP_API_KEY
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
+from app.config import get_settings  # noqa: E402
 from app.repo import get_repo  # noqa: E402
 from app.services import bulk  # noqa: E402
 
@@ -76,7 +77,8 @@ class FakeBitnob:
 
 
 @pytest.fixture
-def ctx():
+def ctx(monkeypatch):
+    monkeypatch.setattr(get_settings(), "confirm_payout", True)
     get_repo().clear()
     bulk._COUNTRY_CACHE.update(ts=0.0, codes=None)
     bulk._RUNNING.clear()
@@ -91,6 +93,13 @@ def ctx():
 def upload(tc, text=CSV, **form):
     return tc.post("/batches", files={"file": ("b.csv", text.encode(), "text/csv")},
                    data={"name": "Livreurs", **form}, headers=AUTH)
+
+
+def test_execute_requires_live_payout_confirmation(ctx, monkeypatch):
+    tc, _ = ctx
+    monkeypatch.setattr(get_settings(), "confirm_payout", False)
+    bid = upload(tc).json()["batch"]["id"]
+    assert tc.post(f"/batches/{bid}/execute", headers=AUTH).status_code == 403
 
 
 def hook(tc, event, ref, eid):

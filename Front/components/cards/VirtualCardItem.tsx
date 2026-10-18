@@ -85,6 +85,7 @@ export function VirtualCardItem({
 
         <div className="flex items-center gap-2">
           <Wifi className={cn("w-4 h-4 rotate-90", theme.mutedText)} />
+          {card.status !== "unknown" && (
           <button
             onClick={() => onToggleStatus?.(card.id)}
             className={cn(
@@ -105,6 +106,7 @@ export function VirtualCardItem({
               )}
             />
           </button>
+          )}
         </div>
       </div>
 
@@ -112,8 +114,9 @@ export function VirtualCardItem({
       <div className="z-10 my-1">
         <div className="flex items-center justify-between">
           <div className="font-mono text-base sm:text-lg font-bold tracking-widest">
-            {showSensitive ? card.cardNumber : card.maskedNumber}
+            {showSensitive && card.cardNumber ? card.cardNumber : card.maskedNumber}
           </div>
+          {card.cardNumber && (
           <button
             onClick={() => setShowSensitive(!showSensitive)}
             className={cn("p-1 rounded opacity-70 hover:opacity-100", theme.mutedText)}
@@ -121,6 +124,7 @@ export function VirtualCardItem({
           >
             {showSensitive ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
+          )}
         </div>
       </div>
 
@@ -137,14 +141,12 @@ export function VirtualCardItem({
           <span className={cn("text-[9px] uppercase tracking-wider block", theme.mutedText)}>
             Expire
           </span>
-          <span className="font-mono font-bold">{card.expiryDate}</span>
+          <span className="font-mono font-bold">{card.expiryDate || "—"}</span>
         </div>
 
-        {/* Mastercard double circle emblem */}
-        <div className="flex items-center -space-x-2">
-          <div className="w-6 h-6 rounded-full bg-[#EB001B] opacity-90 shadow-sm" />
-          <div className="w-6 h-6 rounded-full bg-[#F79E1B] opacity-90 shadow-sm" />
-        </div>
+        <span className="text-[9px] font-bold uppercase">
+          {card.brand === "unknown" ? "Bitnob" : card.brand}
+        </span>
       </div>
     </div>
   );

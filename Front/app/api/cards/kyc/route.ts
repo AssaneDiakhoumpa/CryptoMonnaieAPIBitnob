@@ -1,17 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { bitnobServerClient } from "@/lib/bitnob/client";
 import {
-  findUserById,
-  findUserByEmail,
-  updateUserKycStatus,
-} from "@/lib/auth/user-store";
+  backendErrorResponse,
+  backendJsonResponse,
+  jsonBody,
+  requestBackendJson,
+} from "@/lib/backend/client";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const {
-      userId,
+      firstName,
+      lastName,
       email,
+      phoneNumber,
       idType,
       idNumber,
       dateOfBirth,
@@ -21,131 +23,77 @@ export async function POST(req: NextRequest) {
       postalCode,
       country,
     } = body;
-
-    let user = null;
-    if (userId) {
-      user = await findUserById(userId);
-    } else if (email) {
-      user = await findUserByEmail(email);
-    }
-
-    if (!user) {
+    if (
+      !firstName?.trim() ||
+      !lastName?.trim() ||
+      !email?.trim() ||
+      !phoneNumber?.trim() ||
+      !idNumber?.trim() ||
+      !dateOfBirth ||
+      !line1?.trim() ||
+      !city?.trim() ||
+      !state?.trim() ||
+      !postalCode?.trim() ||
+      !country
+    ) {
       return NextResponse.json(
-        { success: false, error: "Utilisateur SunuPay introuvable." },
-        { status: 404 }
+        { error: "Tous les champs d’identité, de contact et d’adresse sont requis." },
+        { status: 400 }
       );
     }
 
-    // 1. Validation of required KYC fields for card issuance compliance
-    if (!idType || !["national_id", "passport", "drivers_license", "voters_card"].includes(idType)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Veuillez sélectionner un type de pièce d'identité valide (Carte Nationale, Passeport ou Permis).",
+    const result = await requestBackendJson("/cards/kyc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: jsonBody({
+        customer: {
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
+          email: email.trim(),
+          phone_number: phoneNumber.trim(),
+          date_of_birth: dateOfBirth,
+          line1: line1.trim(),
+          city: city.trim(),
+          state: state.trim(),
+          postal_code: postalCode.trim(),
+          country,
         },
-        { status: 400 }
-      );
-    }
-
-    if (!idNumber || !idNumber.trim()) {
-      return NextResponse.json(
-        { success: false, error: "Le numéro de la pièce d'identité est obligatoire." },
-        { status: 400 }
-      );
-    }
-
-    if (!dateOfBirth || !dateOfBirth.trim()) {
-      return NextResponse.json(
-        { success: false, error: "La date de naissance est requise pour la vérification KYC." },
-        { status: 400 }
-      );
-    }
-
-    if (!line1 || !city || !country) {
-      return NextResponse.json(
-        { success: false, error: "L'adresse résidentielle complète (rue, ville, pays) est obligatoire." },
-        { status: 400 }
-      );
-    }
-
-    // 2. Submit KYC to Bitnob (server-side only)
-    const customerId = user.bitnobCustomerId || `demo_cust_${user.id}`;
-    const kycResult = await bitnobServerClient.updateCustomerKyc(customerId, {
-      idType,
-      idNumber: idNumber.trim(),
-      dateOfBirth: dateOfBirth.trim(),
-      line1: line1.trim(),
-      city: city.trim(),
-      state: state?.trim() || "Dakar",
-      postalCode: postalCode?.trim() || "12000",
-      country: country.trim(),
+        id_type: idType,
+        id_number: idNumber.trim(),
+        id_front_image: body.idFrontImage,
+      }),
     });
+    if (!result.ok) return backendJsonResponse(result);
 
-    if (kycResult.success) {
-      await updateUserKycStatus(user.id, "approved", {
-        idType,
-        idNumber: idNumber.trim(),
-        dateOfBirth: dateOfBirth.trim(),
-        line1: line1.trim(),
-        city: city.trim(),
-        country: country.trim(),
-      });
-
-      return NextResponse.json({
-        success: true,
-        kycStatus: "approved",
-        message: "Vérification d'identité KYC validée avec succès par Bitnob. Vous pouvez désormais créer des cartes virtuelles.",
-        isDemo: kycResult.isDemo,
-      });
-    } else {
-      await updateUserKycStatus(user.id, "pending_review", {
-        idType,
-        idNumber: idNumber.trim(),
-      });
-
+    const data =
+      result.data && typeof result.data === "object"
+        ? (result.data as Record<string, unknown>)
+        : {};
+    const bitnobData =
+      data.data && typeof data.data === "object"
+        ? (data.data as Record<string, unknown>)
+        : {};
+    const customerId = bitnobData.customer_id;
+    if (typeof customerId !== "string" || !customerId) {
       return NextResponse.json(
-        {
-          success: false,
-          kycStatus: "pending_review",
-          error: kycResult.error || "Examen des documents KYC en cours.",
-        },
-        { status: 422 }
+        { error: "Bitnob n’a pas retourné le customer_id requis pour créer une carte." },
+        { status: 502 }
       );
     }
-  } catch (err: any) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: err?.message || "Erreur interne lors de la vérification KYC.",
-      },
-      { status: 500 }
-    );
+    return NextResponse.json({
+      success: true,
+      customerId,
+      status: bitnobData.status,
+    });
+  } catch (error) {
+    return backendErrorResponse(error);
   }
 }
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
-    const { searchParams } = new URL(req.url);
-    const userId = searchParams.get("userId");
-    const email = searchParams.get("email");
-
-    let user = null;
-    if (userId) {
-      user = await findUserById(userId);
-    } else if (email) {
-      user = await findUserByEmail(email);
-    }
-
-    if (!user) {
-      return NextResponse.json({ kycStatus: "unverified" });
-    }
-
-    return NextResponse.json({
-      kycStatus: user.kycStatus || "unverified",
-      bitnobCustomerId: user.bitnobCustomerId,
-      bitnobSyncStatus: user.bitnobSyncStatus,
-    });
-  } catch {
-    return NextResponse.json({ kycStatus: "unverified" });
+    return backendJsonResponse(await requestBackendJson("/cards/kyc/customers"));
+  } catch (error) {
+    return backendErrorResponse(error);
   }
 }

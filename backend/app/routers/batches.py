@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from pydantic import BaseModel, Field
 
 from app.bitnob.client import BitnobClient
+from app.config import get_settings
 from app.deps import get_client, require_api_key
 from app.repo import get_repo
 from app.repo.base import BatchRepository
@@ -116,6 +117,8 @@ async def get_batch(batch_id: str, repo: BatchRepository = Depends(_repo)):
 async def execute_batch(batch_id: str, background: BackgroundTasks,
                         c: BitnobClient = Depends(get_client), repo: BatchRepository = Depends(_repo)):
     """Lance les paiements en arrière-plan. Suivre avec GET /batches/{id}."""
+    if not getattr(c, "mock", False) and not get_settings().confirm_payout:
+        raise HTTPException(403, "Payout désactivé : CONFIRM_PAYOUT=true est requis.")
     try:
         await bulk.start_execution(repo, batch_id)
     except LookupError:
@@ -130,6 +133,8 @@ async def execute_batch(batch_id: str, background: BackgroundTasks,
 async def retry_batch(batch_id: str, background: BackgroundTasks,
                       c: BitnobClient = Depends(get_client), repo: BatchRepository = Depends(_repo)):
     """Relance les payouts FAILED/EXPIRED. Les UNCERTAIN ne sont jamais relancés."""
+    if not getattr(c, "mock", False) and not get_settings().confirm_payout:
+        raise HTTPException(403, "Payout désactivé : CONFIRM_PAYOUT=true est requis.")
     try:
         n = await bulk.prepare_retry(repo, batch_id)
     except LookupError:

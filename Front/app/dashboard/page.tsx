@@ -1,22 +1,47 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { Plus, ArrowRight, Wallet } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { StatCard } from "@/components/ui/StatCard";
-import { CryptoIcon } from "@/components/ui/CryptoIcon";
-import { ChartCard } from "@/components/ui/ChartCard";
-import { QuickStatsCard } from "@/components/dashboard/QuickStatsCard";
-import { TransactionTable } from "@/components/ui/TransactionTable";
-import {
-  MOCK_BALANCES,
-  MOCK_TRANSACTIONS,
-  MOCK_USER,
-} from "@/lib/mock-data";
 import { ToastProvider } from "@/components/ui/Toast";
 
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 export default function DashboardPage() {
+  const [dashboard, setDashboard] = useState<Record<string, unknown>>({});
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/dashboard")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Impossible de charger le tableau de bord.");
+        return data;
+      })
+      .then((data: unknown) => {
+        if (active) setDashboard(record(data));
+      })
+      .catch((loadError: Error) => {
+        if (active) setError(loadError.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const summary = record(dashboard.summary);
+  const totals = record(summary.totals);
+  const byDay = Array.isArray(summary.by_day) ? summary.by_day.map(record) : [];
+  const recentBatches = Array.isArray(summary.recent_batches) ? summary.recent_batches : [];
+  const maxPayouts = Math.max(1, ...byDay.map((item) => Number(item.payouts) || 0));
+
   return (
     <ToastProvider>
       <AppLayout>
@@ -25,7 +50,7 @@ export default function DashboardPage() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight">
-                Bonjour, {MOCK_USER.name.split(" ")[0]}
+                Bonjour
               </h1>
               <p className="text-sm text-gray-500 mt-1">
                 Voici un aperçu de vos activités aujourd&apos;hui.
@@ -48,7 +73,7 @@ export default function DashboardPage() {
             {/* Card 1: Solde total */}
             <StatCard
               title="Solde total"
-              value={`$${MOCK_BALANCES.totalUSD.toLocaleString("fr-FR", { minimumFractionDigits: 2 })}`}
+              value={String(totals.payouts ?? "—")}
               variant="white"
               allowMask
               icon={
@@ -57,46 +82,64 @@ export default function DashboardPage() {
                 </div>
               }
               badge={{
-                text: `+${MOCK_BALANCES.monthlyGrowthPct}% ce mois`,
-                trend: "up",
+                text: "Payouts du compte",
+                trend: "neutral",
               }}
             />
 
             {/* Card 2: Bitcoin */}
             <StatCard
-              title="Bitcoin"
-              value={`${MOCK_BALANCES.crypto.BTC.amount} BTC`}
-              subValue={`≈ $${MOCK_BALANCES.crypto.BTC.usdValue.toFixed(2)}`}
+              title="Payouts réussis"
+              value={String(totals.success ?? "—")}
               variant="white"
-              icon={<CryptoIcon symbol="BTC" size="sm" />}
+              icon={<Wallet className="w-4 h-4" />}
             />
 
             {/* Card 3: USDT */}
             <StatCard
-              title="USDT"
-              value={`${MOCK_BALANCES.crypto.USDT.amount.toFixed(2)} USDT`}
-              subValue={`≈ $${MOCK_BALANCES.crypto.USDT.usdValue.toFixed(2)}`}
+              title="Payouts échoués"
+              value={String(totals.failed ?? "—")}
               variant="white"
-              icon={<CryptoIcon symbol="USDT" size="sm" />}
+              icon={<Wallet className="w-4 h-4" />}
             />
 
             {/* Card 4: USDC */}
             <StatCard
-              title="USDC"
-              value={`${MOCK_BALANCES.crypto.USDC.amount.toFixed(2)} USDC`}
-              subValue={`≈ $${MOCK_BALANCES.crypto.USDC.usdValue.toFixed(2)}`}
+              title="En cours"
+              value={String(totals.in_progress ?? "—")}
               variant="white"
-              icon={<CryptoIcon symbol="USDC" size="sm" />}
+              icon={<Wallet className="w-4 h-4" />}
             />
           </div>
 
-          {/* Middle Row: Chart & Stats */}
+          {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
+
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <ChartCard />
+            <div className="lg:col-span-2 bg-white rounded-2xl border border-[#EAECEF] p-6 shadow-sm">
+              <h3 className="text-base font-bold text-gray-900">Payouts par jour</h3>
+              <p className="text-xs text-gray-500 mt-0.5">Données calculées par le backend</p>
+              <div className="mt-5 space-y-3">
+                {byDay.map((item, index) => {
+                  const count = Number(item.payouts) || 0;
+                  return (
+                    <div key={String(item.date ?? index)} className="grid grid-cols-[90px_1fr_40px] items-center gap-3 text-xs">
+                      <span className="text-gray-500">{String(item.date ?? "—")}</span>
+                      <div className="h-2 rounded-full bg-gray-100">
+                        <div className="h-2 rounded-full bg-[#F5C200]" style={{ width: `${(count / maxPayouts) * 100}%` }} />
+                      </div>
+                      <span className="text-right font-semibold">{count}</span>
+                    </div>
+                  );
+                })}
+                {!byDay.length && <p className="text-sm text-gray-500">Aucune donnée journalière disponible.</p>}
+              </div>
             </div>
-            <div className="lg:col-span-1">
-              <QuickStatsCard />
+            <div className="lg:col-span-1 bg-white rounded-2xl border border-[#EAECEF] p-6 shadow-sm">
+              <h3 className="text-base font-bold text-gray-900">Soldes Bitnob</h3>
+              <p className="text-xs text-gray-500 mt-0.5">Réponse reçue du backend</p>
+              <pre className="mt-4 max-h-64 overflow-auto rounded-xl bg-slate-950 p-3 text-[11px] text-slate-100">
+                {JSON.stringify(dashboard.balances ?? null, null, 2)}
+              </pre>
             </div>
           </div>
 
@@ -108,7 +151,7 @@ export default function DashboardPage() {
                   Transactions récentes
                 </h3>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Historique de vos derniers règlements reçus et transferts
+                  Lots de paiements récents
                 </p>
               </div>
 
@@ -121,7 +164,13 @@ export default function DashboardPage() {
               </Link>
             </div>
 
-            <TransactionTable transactions={MOCK_TRANSACTIONS} limit={4} />
+            {recentBatches.length ? (
+              <pre className="max-h-80 overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-100">
+                {JSON.stringify(recentBatches, null, 2)}
+              </pre>
+            ) : (
+              <p className="text-sm text-gray-500">Aucun lot récent retourné par le backend.</p>
+            )}
           </div>
         </div>
       </AppLayout>

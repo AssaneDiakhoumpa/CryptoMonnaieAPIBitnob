@@ -1,51 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
-import { bitnobServerClient } from "@/lib/bitnob/client";
+import {
+  backendErrorResponse,
+  backendJsonResponse,
+  jsonBody,
+  requestBackendJson,
+} from "@/lib/backend/client";
+import { normalizeInvoice, normalizeInvoiceList } from "@/lib/backend/invoices";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { clientName, description, amount, currency, acceptedCryptos, dueDate, notes } = body;
+    const amountSat = Number(body.amountSat);
+    const description = typeof body.description === "string" ? body.description.trim() : "";
 
-    if (!clientName || !description || !amount || amount <= 0) {
+    if (!Number.isSafeInteger(amountSat) || amountSat < 1 || amountSat > 20_000_000 || !description) {
       return NextResponse.json(
-        { error: "Veuillez fournir un nom de client, une description et un montant valide." },
+        { error: "Un montant entier en satoshis (1 à 20 000 000) et une description sont requis." },
         { status: 400 }
       );
     }
 
-    const invoiceNumber = `SP-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    const checkoutResult = await bitnobServerClient.createCheckout({
-      amount: Math.round(amount * 100), // in cents
-      currency: "USDT",
-      customerEmail: "client@example.com",
-      description: `${description} (Facture ${invoiceNumber})`,
-      reference: invoiceNumber,
-      callbackUrl: `${process.env.NEXT_PUBLIC_APP_URL || "https://sunupay.io"}/api/webhooks/bitnob`,
-      successUrl: `${process.env.NEXT_PUBLIC_APP_URL || "https://sunupay.io"}/pay/${invoiceNumber}?status=success`,
+    const result = await requestBackendJson("/invoices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: jsonBody({
+        amount_sat: amountSat,
+        description,
+        customer_id: body.customerId,
+        expiry_seconds: body.expirySeconds,
+        reference: body.reference,
+      }),
     });
+    if (!result.ok) return backendJsonResponse(result);
+    return NextResponse.json({ invoice: normalizeInvoice(result.data) }, { status: result.status });
+  } catch (error) {
+    return backendErrorResponse(error);
+  }
+}
 
-    const newInvoice = {
-      id: `inv-${Date.now()}`,
-      invoiceNumber,
-      clientName,
-      description,
-      amount,
-      currency: currency || "USD",
-      acceptedCryptos: acceptedCryptos || ["BTC", "USDT", "USDC"],
-      dueDate,
-      notes,
-      status: "pending",
-      createdAt: new Date().toISOString(),
-      shareableUrl: checkoutResult.checkoutUrl || `https://sunupay.io/pay/${invoiceNumber}`,
-      isDemo: checkoutResult.isDemo,
-    };
-
-    return NextResponse.json({ success: true, invoice: newInvoice });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message || "Erreur interne lors de la création de la facture" },
-      { status: 500 }
-    );
+export async function GET() {
+  try {
+    const result = await requestBackendJson("/invoices");
+    if (!result.ok) return backendJsonResponse(result);
+    return NextResponse.json({ invoices: normalizeInvoiceList(result.data) }, { status: result.status });
+  } catch (error) {
+    return backendErrorResponse(error);
   }
 }

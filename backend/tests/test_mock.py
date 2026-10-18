@@ -51,7 +51,9 @@ def wait_for(fn, timeout=3.0):
 
 
 def test_health_reports_mock_mode(tc):
-    assert tc.get("/health").json() == {"status": "ok", "mode": "mock"}
+    assert tc.get("/health").json() == {
+        "status": "ok", "mode": "mock", "demo": True, "db": False
+    }
     assert tc.get("/whoami", headers=AUTH).json()["data"]["environment"] == "mock"
 
 

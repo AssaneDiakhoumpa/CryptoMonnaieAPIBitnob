@@ -1,42 +1,124 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { StatCard } from "@/components/ui/StatCard";
 import { VirtualCardItem } from "@/components/cards/VirtualCardItem";
-import { CategoryDonutChart } from "@/components/cards/CategoryDonutChart";
 import { ToastProvider, useToast } from "@/components/ui/Toast";
-import {
-  MOCK_CARDS,
-  MOCK_CARD_EXPENSES,
-  MOCK_CARD_STATS,
-  MOCK_USER,
-} from "@/lib/mock-data";
 import { VirtualCard } from "@/types";
 import { Plus, X, ShieldAlert, CreditCard, ArrowRight, ShieldCheck, ArrowLeftRight, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+interface BackendCard {
+  card_id?: unknown;
+  name?: unknown;
+  status?: unknown;
+  last4?: unknown;
+  balance_usd?: unknown;
+  monthly_budget_usd?: unknown;
+  spent_usd?: unknown;
+}
+
+function toVirtualCard(value: unknown): VirtualCard | null {
+  if (!value || typeof value !== "object") return null;
+  const card = value as BackendCard;
+  if (typeof card.card_id !== "string" || !card.card_id) return null;
+  const status =
+    card.status === "active" || card.status === "frozen"
+      ? card.status
+      : "unknown";
+  const last4 = typeof card.last4 === "string" ? card.last4 : "";
+  return {
+    id: card.card_id,
+    maskedNumber: last4 ? `•••• •••• •••• ${last4}` : "Numéro masqué par Bitnob",
+    last4,
+    cardHolder: typeof card.name === "string" ? card.name : "",
+    brand: "unknown",
+    cardType: "virtual",
+    status,
+    balance: Number(card.balance_usd) || 0,
+    monthlyLimit: Number(card.monthly_budget_usd) || 0,
+    spentThisMonth: Number(card.spent_usd) || 0,
+    theme: "yellow",
+  };
+}
+
 function CartesContent() {
   const { success, info, error: toastError } = useToast();
-  const [cards, setCards] = useState<VirtualCard[]>(MOCK_CARDS);
-  const [expenses, setExpenses] = useState(MOCK_CARD_EXPENSES);
+  const [cards, setCards] = useState<VirtualCard[]>([]);
+  const [isLoadingCards, setIsLoadingCards] = useState(true);
+  const [cardsError, setCardsError] = useState("");
+  const [selectedCardTransactions, setSelectedCardTransactions] = useState<unknown>(null);
+  const [transactionCardId, setTransactionCardId] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isKycModalOpen, setIsKycModalOpen] = useState(false);
 
-  // KYC Verification state required by Bitnob
-  const [kycStatus, setKycStatus] = useState<"unverified" | "pending_review" | "approved">("unverified");
-  const [kycIdType, setKycIdType] = useState<"national_id" | "passport" | "drivers_license">("national_id");
+  const [kycStatus, setKycStatus] = useState("unverified");
+  const [kycCustomerId, setKycCustomerId] = useState("");
+  const [kycIdType, setKycIdType] = useState<"national_id" | "passport" | "drivers_license" | "nin">("national_id");
   const [kycIdNumber, setKycIdNumber] = useState("");
-  const [kycDateOfBirth, setKycDateOfBirth] = useState("1995-06-15");
-  const [kycLine1, setKycLine1] = useState("Almadies Zone 8");
-  const [kycCity, setKycCity] = useState("Dakar");
+  const [kycFirstName, setKycFirstName] = useState("");
+  const [kycLastName, setKycLastName] = useState("");
+  const [kycEmail, setKycEmail] = useState("");
+  const [kycPhoneNumber, setKycPhoneNumber] = useState("");
+  const [kycDateOfBirth, setKycDateOfBirth] = useState("");
+  const [kycLine1, setKycLine1] = useState("");
+  const [kycCity, setKycCity] = useState("");
+  const [kycState, setKycState] = useState("");
+  const [kycPostalCode, setKycPostalCode] = useState("");
   const [kycCountry, setKycCountry] = useState("SEN");
+  const [kycIdFrontImage, setKycIdFrontImage] = useState("");
   const [isSubmittingKyc, setIsSubmittingKyc] = useState(false);
+  const [isCreatingCard, setIsCreatingCard] = useState(false);
 
-  // New card modal form state
-  const [newCardName, setNewCardName] = useState(MOCK_USER.name.toUpperCase());
+  const [newCardName, setNewCardName] = useState("");
   const [newCardLimit, setNewCardLimit] = useState(1000);
   const [newCardTheme, setNewCardTheme] = useState<"yellow" | "black" | "silver">("yellow");
+
+  const loadCards = useCallback(async () => {
+    const response = await fetch("/api/cards");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Impossible de charger les cartes.");
+    if (!Array.isArray(data)) throw new Error("Réponse inattendue du service cartes.");
+    setCards(data.map(toVirtualCard).filter((card): card is VirtualCard => card !== null));
+  }, []);
+
+  const refreshKycStatus = useCallback(async () => {
+    const response = await fetch("/api/cards/kyc");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Impossible de vérifier le statut KYC.");
+    if (!data || typeof data !== "object") return;
+    const customers = Object.entries(data as Record<string, unknown>);
+    const latest = customers.at(-1);
+    if (!latest || !latest[1] || typeof latest[1] !== "object") return;
+    const [customerId, customer] = latest as [string, Record<string, unknown>];
+    setKycCustomerId(customerId);
+    if (typeof customer.status === "string") setKycStatus(customer.status);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([loadCards(), refreshKycStatus()])
+      .catch((loadError: Error) => {
+        if (active) {
+          setCardsError(loadError.message);
+        }
+      })
+      .finally(() => {
+        if (active) setIsLoadingCards(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [loadCards, refreshKycStatus]);
+
+  useEffect(() => {
+    if (!kycCustomerId || kycStatus !== "pending") return;
+    const timer = window.setInterval(() => {
+      refreshKycStatus().catch((refreshError: Error) => setCardsError(refreshError.message));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [kycCustomerId, kycStatus, refreshKycStatus]);
 
   const handleOpenCardCreation = () => {
     if (kycStatus !== "approved") {
@@ -52,8 +134,14 @@ function CartesContent() {
 
   const handleSubmitKyc = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!kycIdNumber.trim()) {
-      toastError("Numéro de pièce manquant", "Veuillez renseigner votre numéro de pièce officielle.");
+    if (!kycIdNumber.trim() || !kycFirstName.trim() || !kycLastName.trim() ||
+        !kycEmail.trim() || !kycPhoneNumber.trim() || !kycDateOfBirth ||
+        !kycLine1.trim() || !kycCity.trim() || !kycState.trim() || !kycPostalCode.trim()) {
+      toastError("Informations manquantes", "Complétez les champs d’identité, de contact et d’adresse.");
+      return;
+    }
+    if (kycIdType !== "nin" && !kycIdFrontImage) {
+      toastError("Document requis", "Ajoutez le recto de votre pièce d’identité.");
       return;
     }
 
@@ -63,80 +151,124 @@ function CartesContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: "amadou@sunupay.com",
+          firstName: kycFirstName.trim(),
+          lastName: kycLastName.trim(),
+          email: kycEmail.trim(),
+          phoneNumber: kycPhoneNumber.trim(),
           idType: kycIdType,
           idNumber: kycIdNumber.trim(),
           dateOfBirth: kycDateOfBirth,
           line1: kycLine1.trim(),
           city: kycCity.trim(),
+          state: kycState.trim(),
+          postalCode: kycPostalCode.trim(),
           country: kycCountry,
+          idFrontImage: kycIdFrontImage || undefined,
         }),
       });
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setKycStatus("approved");
+        setKycCustomerId(data.customerId);
+        setKycStatus(typeof data.status === "string" ? data.status : "pending");
         setIsKycModalOpen(false);
-        success(
-          "Identité approuvée par Bitnob",
-          "Votre profil KYC est validé. La création de cartes virtuelles est désormais débloquée."
-        );
-        // Directement ouvrir le formulaire de création de carte
-        setIsModalOpen(true);
+        info("Dossier KYC transmis", "La création de carte sera disponible après confirmation du statut par Bitnob.");
       } else {
         toastError("Erreur KYC", data.error || "Impossible de valider les documents auprès de Bitnob.");
       }
-    } catch {
-      toastError("Erreur réseau", "Impossible de joindre le service de conformité Bitnob.");
+    } catch (submissionError) {
+      toastError(
+        "Erreur KYC",
+        submissionError instanceof Error ? submissionError.message : "Impossible de joindre Bitnob."
+      );
     } finally {
       setIsSubmittingKyc(false);
     }
   };
 
-  const handleToggleCardStatus = (id: string) => {
-    setCards((prev) =>
-      prev.map((c) => {
-        if (c.id === id) {
-          const nextStatus = c.status === "active" ? "frozen" : "active";
-          if (nextStatus === "frozen") {
-            info("Carte gelée", `La carte **** ${c.last4} a été mise en pause.`);
-          } else {
-            success("Carte réactivée", `La carte **** ${c.last4} est maintenant utilisable.`);
-          }
-          return { ...c, status: nextStatus };
-        }
-        return c;
-      })
-    );
+  const handleToggleCardStatus = async (id: string) => {
+    const card = cards.find((item) => item.id === id);
+    if (!card || card.status === "unknown") return;
+    const nextStatus = card.status === "active" ? "frozen" : "active";
+    try {
+      const response = await fetch(`/api/cards/${encodeURIComponent(id)}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Bitnob n’a pas modifié le statut de la carte.");
+      setCards((current) =>
+        current.map((item) => item.id === id ? { ...item, status: nextStatus } : item)
+      );
+      success(
+        nextStatus === "frozen" ? "Carte gelée" : "Carte réactivée",
+        `La carte •••• ${card.last4} a été mise à jour.`
+      );
+    } catch (statusError) {
+      toastError(
+        "Modification impossible",
+        statusError instanceof Error ? statusError.message : "Erreur inconnue."
+      );
+    }
   };
 
-  const handleCreateDemoCard = (e: React.FormEvent) => {
+  const handleCreateCard = async (e: React.FormEvent) => {
     e.preventDefault();
-    const randomLast4 = Math.floor(1000 + Math.random() * 9000).toString();
-    const newCard: VirtualCard = {
-      id: `card-${Date.now()}`,
-      cardNumber: `5340 8892 4110 ${randomLast4}`,
-      maskedNumber: `•••• •••• •••• ${randomLast4}`,
-      last4: randomLast4,
-      cardHolder: newCardName.trim().toUpperCase() || "AMADOU DIONE",
-      expiryDate: "11/29",
-      cvv: "591",
-      brand: "mastercard",
-      cardType: "virtual",
-      status: "active",
-      balance: newCardLimit,
-      monthlyLimit: newCardLimit,
-      spentThisMonth: 0,
-      theme: newCardTheme,
-    };
-
-    setCards([newCard, ...cards]);
-    setIsModalOpen(false);
-    success(
-      "Carte virtuelle émise avec succès",
-      `Carte Mastercard **** ${randomLast4} activée via le profil client Bitnob approuvé.`
-    );
+    if (kycStatus !== "approved" || !kycCustomerId) {
+      toastError("KYC requis", "Bitnob doit avoir approuvé le profil avant la création d’une carte.");
+      return;
+    }
+    setIsCreatingCard(true);
+    try {
+      const response = await fetch("/api/cards", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newCardName.trim(),
+          monthlyBudgetUsd: newCardLimit,
+          customerId: kycCustomerId,
+          cardholderName: newCardName.trim(),
+          cardBrand: "mastercard",
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Bitnob n’a pas créé la carte.");
+      const card = toVirtualCard(data);
+      if (!card) throw new Error("Réponse de création de carte invalide.");
+      setCards((current) => [{ ...card, theme: newCardTheme }, ...current]);
+      setIsModalOpen(false);
+      success("Carte créée", `Enveloppe « ${newCardName.trim()} » créée par Bitnob.`);
+    } catch (creationError) {
+      toastError(
+        "Création impossible",
+        creationError instanceof Error ? creationError.message : "Erreur inconnue."
+      );
+    } finally {
+      setIsCreatingCard(false);
+    }
   };
+
+  const loadCardTransactions = async (id: string) => {
+    setTransactionCardId(id);
+    setSelectedCardTransactions(null);
+    try {
+      const response = await fetch(`/api/cards/${encodeURIComponent(id)}/transactions`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Impossible de charger les transactions.");
+      setSelectedCardTransactions(data);
+    } catch (transactionLoadError) {
+      toastError(
+        "Transactions indisponibles",
+        transactionLoadError instanceof Error ? transactionLoadError.message : "Erreur inconnue."
+      );
+      setTransactionCardId("");
+    }
+  };
+
+  const totalSpent = cards.reduce((sum, card) => sum + card.spentThisMonth, 0);
+  const totalBudget = cards.reduce((sum, card) => sum + card.monthlyLimit, 0);
+  const totalBalance = cards.reduce((sum, card) => sum + card.balance, 0);
 
   return (
     <div className="space-y-6">
@@ -150,7 +282,12 @@ function CartesContent() {
             {kycStatus === "approved" ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold">
                 <ShieldCheck className="w-3.5 h-3.5" />
-                <span>KYC Bitnob Approuvé</span>
+                <span>KYC Bitnob approuvé</span>
+              </span>
+            ) : kycStatus === "pending" ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold">
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>KYC en attente</span>
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold">
@@ -182,18 +319,22 @@ function CartesContent() {
             </div>
             <div>
               <div className="text-sm font-bold text-[#92400E]">
-                Vérification d&apos;identité (KYC) requise par Bitnob
+                {kycStatus === "pending" ? "Vérification KYC en attente chez Bitnob" : "Vérification d'identité (KYC) requise par Bitnob"}
               </div>
               <p className="text-xs text-[#B45309] mt-0.5 leading-relaxed max-w-2xl">
-                Conformément aux normes réglementaires et aux exigences du partenaire Bitnob, l&apos;émission de cartes virtuelles nécessite la validation préalable de votre identité.
+                {kycStatus === "pending"
+                  ? "Le dossier est transmis. La création de carte sera débloquée après réception du webhook de validation."
+                  : "L'émission de cartes virtuelles nécessite la validation préalable de votre identité par Bitnob."}
               </p>
             </div>
           </div>
           <button
-            onClick={() => setIsKycModalOpen(true)}
+            onClick={() => kycStatus === "pending"
+              ? refreshKycStatus().catch((refreshError: Error) => toastError("Actualisation impossible", refreshError.message))
+              : setIsKycModalOpen(true)}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0F172A] hover:bg-slate-800 text-white font-bold text-xs shrink-0 transition-colors shadow-xs"
           >
-            <span>Vérifier mon identité</span>
+            <span>{kycStatus === "pending" ? "Actualiser le statut" : "Vérifier mon identité"}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -204,7 +345,7 @@ function CartesContent() {
         {/* Dépenses totales */}
         <StatCard
           title="Dépenses totales"
-          value={`$${MOCK_CARD_STATS.totalSpent.toFixed(2)}`}
+          value={`$${totalSpent.toFixed(2)}`}
           variant="white"
           allowMask
           icon={
@@ -212,17 +353,14 @@ function CartesContent() {
               <Wallet className="w-3.5 h-3.5" />
             </div>
           }
-          badge={{
-            text: `+${MOCK_CARD_STATS.spentGrowthPct}% ce mois`,
-            trend: "up",
-          }}
+          subValue="Dépenses retournées par Bitnob"
         />
 
         {/* Cartes actives */}
         <StatCard
           title="Cartes actives"
           value={`${cards.filter((c) => c.status === "active").length}`}
-          subValue={`sur ${MOCK_CARD_STATS.maxCardsCount} maximum`}
+          subValue={`${cards.length} enveloppe(s) Bitnob`}
           variant="white"
           icon={
             <div className="w-6 h-6 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-200/60 shadow-xs">
@@ -234,8 +372,8 @@ function CartesContent() {
         {/* Limite totale */}
         <StatCard
           title="Limite totale"
-          value={`$${MOCK_CARD_STATS.totalLimit.toLocaleString("fr-FR")}`}
-          subValue={`dont $${MOCK_CARD_STATS.usedLimit.toLocaleString("fr-FR")} utilisé`}
+          value={`$${totalBudget.toLocaleString("fr-FR")}`}
+          subValue={`dont $${totalSpent.toLocaleString("fr-FR")} dépensé`}
           variant="white"
           icon={
             <div className="w-6 h-6 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center shrink-0 border border-blue-200/60 shadow-xs">
@@ -246,9 +384,9 @@ function CartesContent() {
 
         {/* Transactions */}
         <StatCard
-          title="Transactions"
-          value={`${MOCK_CARD_STATS.transactionsThisMonth}`}
-          subValue="ce mois"
+          title="Solde disponible"
+          value={`$${totalBalance.toLocaleString("fr-FR")}`}
+          subValue="Solde des cartes retourné par Bitnob"
           variant="white"
           icon={
             <div className="w-6 h-6 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center shrink-0 border border-slate-200/60 shadow-xs">
@@ -292,9 +430,13 @@ function CartesContent() {
         </div>
 
         {/* Dépenses par catégorie (Donut Chart) */}
-        <div className="lg:col-span-5">
-          <CategoryDonutChart />
-        </div>
+        {cardsError && (
+          <p className="text-sm text-rose-700" role="alert">{cardsError}</p>
+        )}
+        {isLoadingCards && <p className="text-sm text-gray-500">Chargement des cartes Bitnob…</p>}
+        {!isLoadingCards && cards.length === 0 && !cardsError && (
+          <p className="text-sm text-gray-500">Aucune enveloppe retournée par Bitnob.</p>
+        )}
       </div>
 
       {/* Enveloppes Budgétaires Cloisonnées (Bitnob Hackathon Scenario) */}
@@ -310,7 +452,7 @@ function CartesContent() {
               </span>
             </div>
             <p className="text-xs text-gray-500 mt-0.5">
-              Chaque usage dispose de son propre budget cloisonné et de sa carte dédiée avec gel automatique à épuisement.
+              Enveloppes et budgets retournés par l’API backend.
             </p>
           </div>
 
@@ -318,128 +460,49 @@ function CartesContent() {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
-          {/* Enveloppe 1: Meta Ads */}
-          <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/40 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-gray-900 text-sm">Meta Ads</span>
-              <span className="text-[10px] bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded-full animate-pulse">
-                Alerte : Solde bas
-              </span>
-            </div>
-            <div className="flex items-baseline justify-between">
-              <div>
-                <span className="text-xl font-black text-gray-900">$14.50</span>
-                <span className="text-xs text-gray-500"> / $100.00</span>
+          {cards.map((card) => (
+            <div key={card.id} className="p-4 rounded-xl border border-gray-200 bg-white space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-gray-900 text-sm">{card.cardHolder || card.id}</span>
+                <span className="text-xs text-gray-500">{card.status}</span>
               </div>
-              <span className="text-xs text-rose-600 font-bold">85.5% consommé</span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
-              <div className="bg-rose-500 h-full rounded-full" style={{ width: "85.5%" }} />
-            </div>
-            <p className="text-[11px] text-gray-500 leading-tight">
-              Gel automatique activé si solde = $0. Carte liée : **** 4321
-            </p>
-          </div>
-
-          {/* Enveloppe 2: Outils SaaS */}
-          <div className="p-4 rounded-xl border border-gray-200 bg-white space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-gray-900 text-sm">Outils (Notion, Figma, Canva)</span>
-              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">
-                Sain
-              </span>
-            </div>
-            <div className="flex items-baseline justify-between">
-              <div>
-                <span className="text-xl font-black text-gray-900">$24.99</span>
-                <span className="text-xs text-gray-500"> / $50.00</span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-xl font-black text-gray-900">${card.balance.toFixed(2)}</span>
+                <span className="text-xs text-gray-500">/ ${card.monthlyLimit.toFixed(2)}</span>
               </div>
-              <span className="text-xs text-emerald-600 font-bold">50% consommé</span>
+              <p className="text-[11px] text-gray-500">Carte masquée •••• {card.last4 || "—"}</p>
             </div>
-            <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
-              <div className="bg-[#F5C200] h-full rounded-full" style={{ width: "50%" }} />
-            </div>
-            <p className="text-[11px] text-gray-500 leading-tight">
-              Dépenses courantes logicielles. Carte liée : **** 9867
-            </p>
-          </div>
-
-          {/* Enveloppe 3: Formation */}
-          <div className="p-4 rounded-xl border border-gray-200 bg-white space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-gray-900 text-sm">Formation & Livres</span>
-              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">
-                Intact
-              </span>
-            </div>
-            <div className="flex items-baseline justify-between">
-              <div>
-                <span className="text-xl font-black text-gray-900">$30.00</span>
-                <span className="text-xs text-gray-500"> / $30.00</span>
-              </div>
-              <span className="text-xs text-gray-500 font-bold">0% consommé</span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
-              <div className="bg-gray-300 h-full rounded-full" style={{ width: "0%" }} />
-            </div>
-            <p className="text-[11px] text-gray-500 leading-tight">
-              Abonnements & documentation. Carte liée : **** 1123
-            </p>
-          </div>
+          ))}
         </div>
       </div>
 
-      {/* Bottom Row: Historique des dépenses */}
-      <div className="bg-white rounded-2xl border border-[#EAECEF] p-6 shadow-sm">
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <h3 className="text-base font-bold text-gray-900">
-              Historique des dépenses
-            </h3>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Paiements récents débités sur vos cartes virtuelles
-            </p>
-          </div>
-
-          <button className="text-xs font-bold text-gray-700 hover:text-black">
-            Voir tout →
-          </button>
+      <div className="bg-white rounded-2xl border border-[#EAECEF] p-6 shadow-sm space-y-4">
+        <div>
+          <h3 className="text-base font-bold text-gray-900">Transactions de carte</h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Réponse Bitnob affichée sans présumer de champs transactionnels non confirmés.
+          </p>
         </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-gray-100 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
-                <th className="pb-3 px-4 font-medium">Marchand</th>
-                <th className="pb-3 px-4 font-medium">Catégorie</th>
-                <th className="pb-3 px-4 font-medium">Montant</th>
-                <th className="pb-3 px-4 font-medium">Carte</th>
-                <th className="pb-3 px-4 font-medium text-right">Date</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50 text-sm">
-              {expenses.map((exp) => (
-                <tr key={exp.id} className="hover:bg-gray-50/80 transition-colors">
-                  <td className="py-3.5 px-4 font-semibold text-gray-900">
-                    {exp.merchant}
-                  </td>
-                  <td className="py-3.5 px-4 text-xs text-gray-500">
-                    {exp.category}
-                  </td>
-                  <td className="py-3.5 px-4 font-bold text-gray-900">
-                    ${exp.amount.toFixed(2)}
-                  </td>
-                  <td className="py-3.5 px-4 font-mono text-xs text-gray-600">
-                    •••• {exp.cardLast4}
-                  </td>
-                  <td className="py-3.5 px-4 text-right text-xs text-gray-500">
-                    {exp.date}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="flex flex-wrap gap-2">
+          {cards.map((card) => (
+            <button
+              key={card.id}
+              type="button"
+              onClick={() => loadCardTransactions(card.id)}
+              className={cn(
+                "px-3 py-2 rounded-lg border text-xs font-semibold",
+                transactionCardId === card.id ? "border-[#F5C200] bg-[#FFFBEB]" : "border-gray-200"
+              )}
+            >
+              {card.cardHolder || card.id}
+            </button>
+          ))}
         </div>
+        {selectedCardTransactions !== null && (
+          <pre className="max-h-80 overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-100">
+            {JSON.stringify(selectedCardTransactions, null, 2)}
+          </pre>
+        )}
       </div>
 
       {/* Create Card Modal */}
@@ -466,15 +529,14 @@ function CartesContent() {
               </button>
             </div>
 
-            {/* Clear Demonstration Notice as required by prompt */}
             <div className="my-4 p-3 bg-amber-50 rounded-xl border border-amber-200/60 flex items-start gap-2.5 text-xs text-amber-900 leading-relaxed">
               <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               <p>
-                <strong>Environnement de Démonstration :</strong> Cette interface simule la création de cartes virtuelles. Aucune carte bancaire réelle n&apos;est émise tant que l&apos;API émetteur n&apos;est pas connectée.
+                La demande crée une enveloppe auprès de Bitnob. Le numéro complet et le CVV ne sont jamais exposés par cette interface.
               </p>
             </div>
 
-            <form onSubmit={handleCreateDemoCard} className="space-y-4 text-xs">
+            <form onSubmit={handleCreateCard} className="space-y-4 text-xs">
               <div>
                 <label className="block font-semibold text-gray-700 mb-1">
                   Nom sur la carte
@@ -558,9 +620,10 @@ function CartesContent() {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 text-xs font-bold bg-[#F5C200] hover:bg-[#E5B500] text-[#0f172a] rounded-xl shadow-md shadow-[#F5C200]/25"
+                  disabled={isCreatingCard}
+                  className="px-5 py-2.5 text-xs font-bold bg-[#F5C200] hover:bg-[#E5B500] text-[#0f172a] rounded-xl shadow-md shadow-[#F5C200]/25 disabled:opacity-50"
                 >
-                  Émettre la carte
+                  {isCreatingCard ? "Création..." : "Créer l’enveloppe"}
                 </button>
               </div>
             </form>
@@ -600,8 +663,23 @@ function CartesContent() {
               <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 leading-relaxed">
                 <span className="font-bold">Pourquoi cette vérification ?</span>
                 <p className="text-[11px] text-blue-800 mt-0.5">
-                  L&apos;émission de cartes virtuelles internationales exige l&apos;approbation de votre identité par notre partenaire Bitnob. Vos données sont vérifiées de manière chiffrée.
+                  Les champs sont transmis à Bitnob pour vérification. Le statut final est communiqué de manière asynchrone.
                 </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <input required aria-label="Prénom" placeholder="Prénom"
+                  value={kycFirstName} onChange={(e) => setKycFirstName(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl" />
+                <input required aria-label="Nom" placeholder="Nom"
+                  value={kycLastName} onChange={(e) => setKycLastName(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl" />
+                <input required type="email" aria-label="Adresse e-mail" placeholder="Adresse e-mail"
+                  value={kycEmail} onChange={(e) => setKycEmail(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl" />
+                <input required type="tel" aria-label="Téléphone" placeholder="Téléphone"
+                  value={kycPhoneNumber} onChange={(e) => setKycPhoneNumber(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl" />
               </div>
 
               {/* ID Type */}
@@ -611,10 +689,15 @@ function CartesContent() {
                 </label>
                 <select
                   value={kycIdType}
-                  onChange={(e: any) => setKycIdType(e.target.value)}
+                  onChange={(e) => {
+                    if (["national_id", "passport", "drivers_license", "nin"].includes(e.target.value)) {
+                      setKycIdType(e.target.value as typeof kycIdType);
+                    }
+                  }}
                   className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-medium focus:border-[#F5C200] outline-none"
                 >
                   <option value="national_id">Carte Nationale d&apos;Identité (CNI / NIN)</option>
+                  <option value="nin">NIN</option>
                   <option value="passport">Passeport biométrique</option>
                   <option value="drivers_license">Permis de conduire officiel</option>
                 </select>
@@ -649,6 +732,38 @@ function CartesContent() {
                   />
                 </div>
               </div>
+
+              {kycIdType !== "nin" && (
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">
+                    Recto du document (image, 1 Mo maximum) <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    required
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      setKycIdFrontImage("");
+                      if (!file) return;
+                      if (!file.type.startsWith("image/") || file.size > 1_048_576) {
+                        toastError("Document invalide", "Choisissez une image de 1 Mo maximum.");
+                        event.target.value = "";
+                        return;
+                      }
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        if (typeof reader.result === "string") {
+                          setKycIdFrontImage(reader.result.split(",")[1] || "");
+                        }
+                      };
+                      reader.onerror = () => toastError("Lecture impossible", "Impossible de lire le document.");
+                      reader.readAsDataURL(file);
+                    }}
+                    className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl"
+                  />
+                </div>
+              )}
 
               {/* Address: Line 1, City, Country */}
               <div>
@@ -696,6 +811,12 @@ function CartesContent() {
                     <option value="CMR">Cameroun (CMR)</option>
                   </select>
                 </div>
+                <input required aria-label="Région / état" placeholder="Région / état"
+                  value={kycState} onChange={(e) => setKycState(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl" />
+                <input required aria-label="Code postal" placeholder="Code postal"
+                  value={kycPostalCode} onChange={(e) => setKycPostalCode(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl" />
               </div>
 
               <div className="pt-3 border-t border-gray-100 flex items-center justify-end gap-3">

@@ -1,149 +1,118 @@
 import { NextRequest, NextResponse } from "next/server";
-import { bitnobServerClient } from "@/lib/bitnob/client";
-
-interface ValidateItemPayload {
-  rowIndex: number;
-  name: string;
-  phone: string;
-  amount: number;
-  currency: string;
-  country: string;
-  operator?: string;
-}
+import {
+  backendErrorResponse,
+  backendJsonResponse,
+  jsonBody,
+  requestBackend,
+  requestBackendJson,
+} from "@/lib/backend/client";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { action, items, batchId } = body;
-
-    // Action 1: Confirm batch execution
-    if (action === "confirm" && batchId) {
-      const result = await bitnobServerClient.confirmBatch(batchId);
-      return NextResponse.json({
-        success: true,
-        batchId,
-        status: "processing",
-        message: "Lot de paiements en cours d'exécution sur les rails Bitnob.",
-        result,
-      });
-    }
-
-    // Action 2: Retry failed items
-    if (action === "retry" && batchId) {
-      const result = await bitnobServerClient.retryBatchFailedItems(batchId);
-      return NextResponse.json({
-        success: true,
-        batchId,
-        message: "Lignes échouées relancées.",
-        result,
-      });
-    }
-
-    // Action 3: Validate and prepare batch
-    if (!items || !Array.isArray(items)) {
-      return NextResponse.json(
-        { error: "Veuillez fournir un tableau d'éléments à valider." },
-        { status: 400 }
+    if (req.headers.get("content-type")?.includes("multipart/form-data")) {
+      const form = await req.formData();
+      const file = form.get("file");
+      if (!(file instanceof File)) {
+        return NextResponse.json({ error: "Le fichier CSV est requis." }, { status: 400 });
+      }
+      const backendForm = new FormData();
+      backendForm.set("file", file, file.name);
+      for (const field of ["name", "from_asset", "payment_reason", "default_destination_type", "strict", "allow_duplicates"]) {
+        const value = form.get(field);
+        if (typeof value === "string") backendForm.set(field, value);
+      }
+      return backendJsonResponse(
+        await requestBackendJson("/batches", { method: "POST", body: backendForm })
       );
     }
 
-    const rates: Record<string, number> = {
-      XOF: 595.0,
-      NGN: 1480.0,
-      GHS: 15.5,
-    };
+    const body = await req.json();
+    const { action, items, batchId } = body;
 
-    const feePerItemUSDT = 0.5;
-
-    const validatedItems = items.map((it: ValidateItemPayload, index: number) => {
-      const errors: string[] = [];
-      const country = (it.country || "SN").toUpperCase();
-      const currency = (it.currency || "XOF").toUpperCase();
-      const phone = (it.phone || "").replace(/\s+/g, "");
-
-      // 1. Check country-currency match
-      if (country === "SN" && currency !== "XOF") {
-        errors.push("Le Sénégal utilise le XOF (FCFA).");
+    if (action === "prepare") {
+      if (!Array.isArray(items) || items.length === 0) {
+        return NextResponse.json(
+          { error: "Un lot doit contenir au moins un bénéficiaire." },
+          { status: 400 }
+        );
       }
-      if (country === "NG" && currency !== "NGN") {
-        errors.push("Le Nigéria utilise le NGN (Naira).");
-      }
-      if (country === "GH" && currency !== "GHS") {
-        errors.push("Le Ghana utilise le GHS (Cedi).");
-      }
+      const beneficiaries = items.map((item: Record<string, unknown>) => ({
+        name: item.name,
+        account_number: item.phoneOrAccount,
+        bank_code: item.bankCode,
+        destination_type: item.destinationType || "mobile_money",
+        country: item.country,
+        amount: String(item.amount),
+        currency: item.currency,
+      }));
+      return backendJsonResponse(
+        await requestBackendJson("/batches/manual", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonBody({
+            name: body.name,
+            from_asset: body.fromAsset || "USDT",
+            payment_reason: body.paymentReason || "vendor_payment",
+            strict: false,
+            beneficiaries,
+          }),
+        })
+      );
+    }
 
-      // 2. Check international phone prefixes
-      if (country === "SN" && !phone.startsWith("+221")) {
-        errors.push("Numéro non sénégalais (+221 requis).");
-      }
-      if (country === "NG" && !phone.startsWith("+234")) {
-        errors.push("Numéro non nigérian (+234 requis).");
-      }
-      if (country === "GH" && !phone.startsWith("+233")) {
-        errors.push("Numéro non ghanéen (+233 requis).");
-      }
+    if (action === "confirm" && batchId) {
+      return backendJsonResponse(
+        await requestBackendJson(`/batches/${encodeURIComponent(batchId)}/execute`, {
+          method: "POST",
+        })
+      );
+    }
 
-      // 3. Check min length
-      if (phone.length < 9) {
-        errors.push("Format de numéro incomplet.");
-      }
+    if (action === "retry" && batchId) {
+      return backendJsonResponse(
+        await requestBackendJson(`/batches/${encodeURIComponent(batchId)}/retry`, {
+          method: "POST",
+        })
+      );
+    }
 
-      // 4. Check amount
-      if (!it.amount || it.amount <= 0) {
-        errors.push("Montant invalide ou nul.");
-      }
+    if (action === "refresh" && batchId) {
+      return backendJsonResponse(
+        await requestBackendJson(`/batches/${encodeURIComponent(batchId)}/refresh`, {
+          method: "POST",
+        })
+      );
+    }
 
-      const rate = rates[currency] || 595.0;
-      const amountUSDT = Math.round((it.amount / rate) * 100) / 100;
-
-      return {
-        id: `item-${index + 1}`,
-        rowIndex: index + 1,
-        name: it.name || "Bénéficiaire",
-        phoneOrAccount: it.phone,
-        country,
-        currency,
-        amount: it.amount,
-        amountUSDT,
-        operator: it.operator || "Mobile Money",
-        status: errors.length > 0 ? "invalid" : "valid",
-        errorMessage: errors.join(" • ") || undefined,
-      };
-    });
-
-    const validCount = validatedItems.filter((i) => i.status === "valid").length;
-    const invalidCount = validatedItems.filter((i) => i.status === "invalid").length;
-
-    // Totals per currency
-    const totalAmountLocal: Record<string, number> = {};
-    let totalAmountUSDT = 0;
-
-    validatedItems
-      .filter((i) => i.status === "valid")
-      .forEach((i) => {
-        totalAmountLocal[i.currency] = (totalAmountLocal[i.currency] || 0) + i.amount;
-        totalAmountUSDT += i.amountUSDT;
-      });
-
-    const estimatedFeesUSDT = validCount * feePerItemUSDT;
-
-    return NextResponse.json({
-      success: true,
-      batch: {
-        id: `batch-${Date.now()}`,
-        totalRecipients: validatedItems.length,
-        validCount,
-        invalidCount,
-        totalAmountLocal,
-        totalAmountUSDT: Math.round(totalAmountUSDT * 100) / 100,
-        estimatedFeesUSDT,
-        items: validatedItems,
-      },
-    });
-  } catch (err: any) {
     return NextResponse.json(
-      { error: err?.message || "Erreur de traitement du lot de paiements." },
-      { status: 500 }
+      { error: "action doit être prepare, confirm, retry ou refresh." },
+      { status: 400 }
     );
+  } catch (error) {
+    return backendErrorResponse(error);
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const batchId = request.nextUrl.searchParams.get("batchId");
+    if (request.nextUrl.searchParams.get("action") === "report") {
+      if (!batchId) return NextResponse.json({ error: "batchId est requis." }, { status: 400 });
+      const response = await requestBackend(
+        `/batches/${encodeURIComponent(batchId)}/report.csv`
+      );
+      return new NextResponse(await response.text(), {
+        status: response.status,
+        headers: {
+          "Content-Type": response.headers.get("content-type") || "text/csv; charset=utf-8",
+          "Content-Disposition": response.headers.get("content-disposition") || "attachment",
+        },
+      });
+    }
+    return backendJsonResponse(
+      await requestBackendJson(batchId ? `/batches/${encodeURIComponent(batchId)}` : "/batches")
+    );
+  } catch (error) {
+    return backendErrorResponse(error);
   }
 }

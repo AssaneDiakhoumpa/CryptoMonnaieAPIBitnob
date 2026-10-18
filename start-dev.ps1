@@ -4,31 +4,45 @@ Write-Host "   Demarrage de l'ERP de Paiements Bitnob & IA (Sandbox)"   -Foregro
 Write-Host "==========================================================" -ForegroundColor Cyan
 
 $root = $PSScriptRoot
-Set-Location $root
+$backendDir = Join-Path $root "backend"
+$frontDir = Join-Path $root "Front"
+$backendPython = Join-Path $backendDir ".venv\Scripts\python.exe"
 
 # Verification de l'environnement virtuel Python
-if (-not (Test-Path "$root\.venv\Scripts\python.exe")) {
-    Write-Host "[ERREUR] L'environnement .venv n'a pas ete trouve !" -ForegroundColor Red
-    Write-Host "Veuillez executer : py -m venv .venv et installer requirements.txt"
+if (-not (Test-Path $backendPython)) {
+    Write-Host "[ERREUR] L'environnement backend\.venv n'a pas ete trouve !" -ForegroundColor Red
+    Write-Host "Creez-le dans backend et installez backend\requirements.txt."
     exit 1
 }
 
-# Verification du fichier .env
-if (-not (Test-Path "$root\.env")) {
-    Write-Host "[ATTENTION] Aucun fichier .env trouve. Copie depuis .env.example..." -ForegroundColor Yellow
-    Copy-Item "$root\.env.example" "$root\.env"
+$needsConfiguration = $false
+if (-not (Test-Path (Join-Path $backendDir ".env"))) {
+    Copy-Item (Join-Path $backendDir ".env.example") (Join-Path $backendDir ".env")
+    $needsConfiguration = $true
 }
 
-# Initialisation de la base de donnees avec donnees de demo si absente
-$dbPath = "$root\erp.db"
-if (-not (Test-Path $dbPath)) {
-    Write-Host "[DB] Initialisation de la base de donnees et injection des donnees de test..." -ForegroundColor Green
-    & "$root\.venv\Scripts\python.exe" -m db.seed
+if (-not (Test-Path (Join-Path $frontDir ".env.local"))) {
+    Copy-Item (Join-Path $frontDir ".env.example") (Join-Path $frontDir ".env.local")
+    $needsConfiguration = $true
 }
 
-Write-Host "`n[OK] Lancement du serveur FastAPI sur http://localhost:3000..." -ForegroundColor Green
-Write-Host "Interface Web : http://localhost:3000" -ForegroundColor Yellow
-Write-Host "Documentation : http://localhost:3000/docs" -ForegroundColor Yellow
-Write-Host "Appuyez sur Ctrl+C pour arreter le serveur.`n" -ForegroundColor Gray
+if ($needsConfiguration) {
+    Write-Host "[ATTENTION] Les fichiers d'environnement locaux viennent d'etre crees." -ForegroundColor Yellow
+    Write-Host "Configurez-les, alignez APP_API_KEY, puis relancez le script."
+    exit 1
+}
 
-& "$root\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --reload --port 3000
+if (-not (Test-Path (Join-Path $frontDir "node_modules"))) {
+    Write-Host "[ERREUR] Les dependances Front sont absentes. Lancez npm ci dans Front." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "`n[OK] FastAPI : http://localhost:8000 (docs : /docs)" -ForegroundColor Green
+Write-Host "[OK] Next.js : http://localhost:3000" -ForegroundColor Green
+Write-Host "APP_API_KEY doit avoir la meme valeur dans backend\.env et Front\.env.local." -ForegroundColor Yellow
+Write-Host "Les deux serveurs sont lances dans des fenetres separees.`n" -ForegroundColor Gray
+
+$backendCommand = "& '$backendPython' -m uvicorn app.main:app --reload --port 8000"
+$frontCommand = "npm run dev -- --hostname 127.0.0.1 --port 3000"
+Start-Process -FilePath "powershell.exe" -WorkingDirectory $backendDir -ArgumentList @("-NoExit", "-Command", $backendCommand)
+Start-Process -FilePath $env:ComSpec -WorkingDirectory $frontDir -ArgumentList @("/k", $frontCommand)

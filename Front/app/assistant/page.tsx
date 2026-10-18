@@ -3,18 +3,12 @@
 import React, { useState, useRef, useEffect } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ToastProvider, useToast } from "@/components/ui/Toast";
-import { generateAssistantReply } from "@/lib/assistant-engine";
 import {
   Sparkles,
   Send,
   Bot,
   User,
-  Calculator,
-  ArrowRight,
-  ShieldCheck,
-  HelpCircle,
   Copy,
-  Check,
   FilePlus,
   Database,
   ChevronDown,
@@ -27,31 +21,29 @@ interface ChatMessage {
   sender: "user" | "assistant";
   content: string;
   timestamp: string;
-  computation?: any;
+  computation?: {
+    type: string;
+    details: Record<string, string | number>;
+  };
 }
 
 const INITIAL_MESSAGES: ChatMessage[] = [
   {
     id: "msg-1",
     sender: "assistant",
-    content: `Bonjour Amadou ! Je suis votre Assistant FinTech SunuPay.
+    content: `Bonjour ! Je suis l'assistant SunuPay en lecture seule.
 
-Je suis connecté aux taux en temps réel et aux paramètres de frais de votre compte pour répondre à toutes vos questions financières et techniques sans approximation.
+Les analyses de paiements, les taux, les frais et les transactions ne sont pas encore raccordés à des données vérifiées. Je ne confirmerai donc aucun montant et n'exécuterai aucune opération.
 
-Voici ce que vous pouvez me demander :
-• Combien facturer pour recevoir une somme précise en FCFA net ?
-• Détails et traçabilité d'une transaction blockchain.
-• Moyens de paiement et banques disponibles selon le pays de votre client.`,
+Vous pouvez poser une question ; je vous indiquerai si elle nécessite le service d'analyse ERP, qui n'est pas disponible actuellement.`,
     timestamp: "À l'instant",
   },
 ];
 
 const SUGGESTIONS = [
-  "Combien avons-nous payé au Ghana ce mois-ci ?",
-  "Quel pays reçoit le plus de paiements ?",
-  "Combien dois-je facturer pour recevoir 100 000 FCFA après frais ?",
-  "Quelle part de nos dépenses a été réglée en Bitcoin ?",
-  "Explique-moi la transaction de TechStudio NG.",
+  "Pourquoi les analyses de paiements ne sont-elles pas disponibles ?",
+  "Peux-tu exécuter un paiement ?",
+  "Les taux de change affichés sont-ils vérifiés ?",
 ];
 
 function SqlCollapsible({ code }: { code: string }) {
@@ -233,14 +225,12 @@ function AssistantContent() {
     scrollToBottom();
   }, [messages, isTyping]);
 
-  const [providerInfo, setProviderInfo] = useState<string>("Moteur Déterministe SunuPay");
-
   const handleSendMessage = async (textToSend?: string) => {
     const query = textToSend || inputQuery;
     if (!query.trim() || isTyping) return;
 
     const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
+      id: `user-${messages.length}`,
       sender: "user",
       content: query,
       timestamp: "À l'instant",
@@ -256,7 +246,6 @@ function AssistantContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: query,
-          history: messages.slice(-6),
         }),
       });
 
@@ -266,12 +255,8 @@ function AssistantContent() {
         throw new Error(data.error || "Erreur de communication avec le serveur");
       }
 
-      if (data.provider) {
-        setProviderInfo(data.provider);
-      }
-
       const assistantMsg: ChatMessage = {
-        id: `assistant-${Date.now()}`,
+        id: `assistant-${messages.length + 1}`,
         sender: "assistant",
         content: data.reply,
         timestamp: "À l'instant",
@@ -279,12 +264,12 @@ function AssistantContent() {
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[Assistant Frontend]", err);
       const errorMsg: ChatMessage = {
-        id: `assistant-${Date.now()}`,
+        id: `assistant-${messages.length + 1}`,
         sender: "assistant",
-        content: `Désolé, une erreur est survenue lors de la communication avec l'assistant : ${err?.message || "Erreur réseau"}. Vous pouvez réessayer.`,
+        content: `Désolé, une erreur est survenue lors de la communication avec l'assistant : ${err instanceof Error ? err.message : "Erreur réseau"}. Vous pouvez réessayer.`,
         timestamp: "À l'instant",
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -304,17 +289,17 @@ function AssistantContent() {
             </h1>
             <span className="text-[11px] bg-[#FFF9E6] text-amber-800 font-bold px-2 py-0.5 rounded-full border border-[#F5C200]/40 flex items-center gap-1">
               <Sparkles className="w-3 h-3 text-[#F5C200]" />
-              Calculs fiables
+              Lecture seule
             </span>
           </div>
           <p className="text-xs text-gray-500 mt-0.5">
-            Calculs de facturation certifiés, conversion de devises et support transactionnel.
+            Les analyses financières restent désactivées tant que les données réelles ne sont pas raccordées.
           </p>
         </div>
 
         <div className="flex items-center gap-2 self-start sm:self-auto">
           <span className="text-[11px] text-gray-500 bg-white px-2.5 py-1 rounded-lg border border-gray-200">
-            1 USDT = <strong>595 XOF</strong>
+            Données financières non connectées
           </span>
         </div>
       </div>
@@ -325,6 +310,7 @@ function AssistantContent() {
         <div className="flex-1 p-3.5 sm:p-4 overflow-y-auto space-y-3">
           {messages.map((msg) => {
             const isUser = msg.sender === "user";
+            const computation = msg.computation;
 
             return (
               <div
@@ -358,20 +344,20 @@ function AssistantContent() {
                   <FormattedMessage content={msg.content} isUser={isUser} />
 
                   {/* Computation Action Button */}
-                  {msg.computation?.type === "fee_calc" && (
+                  {computation?.type === "fee_calc" && (
                     <div className="mt-3 pt-2.5 border-t border-gray-200 flex flex-wrap gap-2">
                       <Link
                         href="/factures"
                         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#F5C200] text-[#0f172a] font-bold text-xs shadow-xs hover:bg-[#E5B500] transition-colors"
                       >
                         <FilePlus className="w-3 h-3" />
-                        <span>Créer cette facture ({msg.computation.details.invoiceAmountUSDT} USDT)</span>
+                        <span>Créer cette facture ({computation.details.invoiceAmountUSDT} USDT)</span>
                       </Link>
 
                       <button
                         onClick={() => {
                           navigator.clipboard.writeText(
-                            `Facture: ${msg.computation.details.invoiceAmountUSDT} USDT pour recevoir ${msg.computation.details.targetNetXOF} FCFA`
+                            `Facture: ${computation.details.invoiceAmountUSDT} USDT pour recevoir ${computation.details.targetNetXOF} FCFA`
                           );
                           success("Copié !", "Détail du calcul copié dans le presse-papiers.");
                         }}

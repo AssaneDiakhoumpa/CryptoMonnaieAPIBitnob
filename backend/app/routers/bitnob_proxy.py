@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.bitnob import payouts as svc
 from app.bitnob.client import BitnobClient
@@ -59,6 +59,8 @@ async def initialize(
 
 @router.post("/payout/{quote_id}/finalize", tags=["payouts"])
 async def finalize(quote_id: str, c: BitnobClient = Depends(get_client)):
+    if not getattr(c, "mock", False) and not get_settings().confirm_payout:
+        raise HTTPException(403, "Payout désactivé : CONFIRM_PAYOUT=true est requis.")
     return await svc.finalize(c, quote_id)
 
 
@@ -70,6 +72,8 @@ async def get_payout(payout_id: str, c: BitnobClient = Depends(get_client)):
 # ---- Payouts : tout-en-un (sera réutilisé par /bulk_payout) ----
 @router.post("/payout", tags=["payouts"])
 async def payout(body: PayoutIn, c: BitnobClient = Depends(get_client)):
+    if not getattr(c, "mock", False) and not get_settings().confirm_payout:
+        raise HTTPException(403, "Payout désactivé : CONFIRM_PAYOUT=true est requis.")
     q = await svc.create_quote(c, body.quote)
     init = await svc.initialize(
         c, q["quote_id"], body.beneficiary, body.payment_reason,

@@ -37,11 +37,24 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     }, 4000);
   }, [removeToast]);
 
+  const success = useCallback(
+    (title: string, message?: string) => addToast({ type: "success", title, message }),
+    [addToast]
+  );
+  const error = useCallback(
+    (title: string, message?: string) => addToast({ type: "error", title, message }),
+    [addToast]
+  );
+  const info = useCallback(
+    (title: string, message?: string) => addToast({ type: "info", title, message }),
+    [addToast]
+  );
+
   const value = {
     toast: addToast,
-    success: (title: string, message?: string) => addToast({ type: "success", title, message }),
-    error: (title: string, message?: string) => addToast({ type: "error", title, message }),
-    info: (title: string, message?: string) => addToast({ type: "info", title, message }),
+    success,
+    error,
+    info,
   };
 
   return (

@@ -14,8 +14,8 @@
          |
          | 1. Creer facture / Consulter statut / Payer demo
          v
-  [FastAPI Backend] ---------------------> [API Bitnob v2 (Sandbox)]
-   (Port 3000)          2. Appel signe            (Lightning API)
+  [Next.js Frontend] -----> [FastAPI Backend] ---> [API Bitnob v2 (Sandbox)]
+   (Port 3000)         (Port 8000)  Appel signe      (Lightning API)
          ^                 (HMAC-SHA256)
          |
          +-------------------------------- [Bitnob Webhooks]
@@ -32,20 +32,20 @@
 
 ## Installation et lancement (PowerShell Windows)
 
-En 5 commandes PowerShell :
+Depuis la racine du dépôt, créez l'environnement backend, installez les dépendances, puis installez celles du Front :
 
 ```powershell
-cd "C:\Users\amath\Documents\hackathon-bitnob-py"
-py -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-copy .env.example .env
-.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --port 3000
+py -m venv backend\.venv
+backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+Push-Location Front
+npm ci
+Pop-Location
 ```
 
-> **Astuce de lancement rapide :** Vous pouvez egalement executer `./start-dev.ps1` pour initialiser la base de donnees et lancer le serveur en une commande.
+Lancez `.\start-dev.ps1`. Au premier démarrage, le script crée les fichiers locaux `.env` et `.env.local` depuis leurs exemples puis s'arrête pour vous laisser les configurer. `BACKEND_API_URL` doit viser `http://localhost:8000`. Remplacez le placeholder `APP_API_KEY` dans les deux fichiers par la même clé, puis relancez le script.
 
-- Interface web ERP : [http://localhost:3000](http://localhost:3000)
-- Documentation OpenAPI interactive : [http://localhost:3000/docs](http://localhost:3000/docs)
+- Interface web Next.js : [http://localhost:3000](http://localhost:3000)
+- API FastAPI et documentation OpenAPI : [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
 

@@ -151,12 +151,14 @@ def _fee(quote: dict) -> Decimal | None:
 
 
 async def _process(client: BitnobClient, repo: BatchRepository, batch: Batch, p: Payout) -> None:
+    if p.attempts == 0:
+        p.reference = await repo.start_payout_attempt(p.id)
     stage = "quote"
     callback = get_settings().webhook_url
     try:
         q = await _with_retry(lambda: payouts_api.create_quote(client, QuoteIn(
             settlement_amount=str(p.amount), country=p.country, from_asset=batch.from_asset,
-            to_currency=p.currency, source="offchain", reference=f"Q-{p.reference}")))
+            to_currency=p.currency, source="offchain", reference=p.reference)))
         p.quote_id = _first(q, "quote_id", "id")
         if not p.quote_id:
             raise ValueError("devis sans identifiant")
@@ -172,18 +174,23 @@ async def _process(client: BitnobClient, repo: BatchRepository, batch: Batch, p:
         p.bitnob_payout_id = _first(init, "id", "payout_id") or p.bitnob_payout_id
         p.status = "INITIATED"
         await repo.save_payout(p)
+        if not await repo.apply_payout_status(p, origin="api"):
+            raise RuntimeError("La base a refusé la transition vers INITIATED.")
 
         stage = "finalize"
         fin = await payouts_api.finalize(client, p.quote_id)
         p.bitnob_payout_id = _first(fin, "id", "payout_id") or p.bitnob_payout_id
         p.status = "SUBMITTED"
-    except Exception as e:  # noqa: BLE001 - un payout ne doit jamais faire tomber le batch
+        if not await repo.apply_payout_status(p, origin="api"):
+            raise RuntimeError("La base a refusé la transition vers SUBMITTED.")
+    except (BitnobError, httpx.HTTPError, ValueError) as e:
         ambiguous = stage == "finalize" and (
             not isinstance(e, BitnobError) or e.status_code >= 500)
         p.status = "UNCERTAIN" if ambiguous else "FAILED"
         p.error, p.error_stage = _err_text(e), stage
         log.warning("payout %s -> %s (%s): %s", p.reference, p.status, stage, p.error)
-    await repo.save_payout(p)
+        if not await repo.apply_payout_status(p, origin="api"):
+            raise RuntimeError(f"La base a refusé le statut {p.status} du paiement.")
 
 
 async def run_batch(client: BitnobClient, repo: BatchRepository, batch_id: str) -> None:
@@ -203,11 +210,11 @@ async def run_batch(client: BitnobClient, repo: BatchRepository, batch_id: str) 
 
 
 async def start_execution(repo: BatchRepository, batch_id: str) -> Batch:
-    """Verrouille le batch (DRAFT -> RUNNING). Lève ValueError si déjà lancé."""
+    """Verrouille le batch (DRAFT/VALIDATED -> RUNNING). Lève ValueError si déjà lancé."""
     batch = await repo.get_batch(batch_id)
     if batch is None:
         raise LookupError("batch introuvable")
-    if batch.status != "DRAFT" or batch_id in _RUNNING:
+    if batch.status not in {"DRAFT", "VALIDATED"} or batch_id in _RUNNING:
         raise ValueError(f"batch déjà lancé (statut {batch.status})")
     _RUNNING.add(batch_id)
     batch.status, batch.executed_at = "RUNNING", now()
@@ -220,15 +227,15 @@ async def prepare_retry(repo: BatchRepository, batch_id: str) -> int:
     batch = await repo.get_batch(batch_id)
     if batch is None:
         raise LookupError("batch introuvable")
-    if batch.status == "DRAFT" or batch_id in _RUNNING:
+    if batch.status in {"DRAFT", "VALIDATED", "CANCELLED"} or batch_id in _RUNNING:
         raise ValueError("rien à relancer (batch non exécuté ou en cours)")
     n = 0
     for p in await repo.list_payouts(batch_id):
         if p.status in {"FAILED", "EXPIRED"}:
             p.attempts += 1
-            p.reference = f"{p.reference.split('-r')[0]}-r{p.attempts}"
             p.status, p.error, p.error_stage = "PENDING", None, None
             p.quote_id = p.bitnob_payout_id = p.quote = p.fee = p.completed_at = None
+            p.reference = await repo.start_payout_attempt(p.id)
             await repo.save_payout(p)
             n += 1
     if n:
@@ -240,8 +247,10 @@ async def prepare_retry(repo: BatchRepository, batch_id: str) -> int:
 
 # ------------------------------------------------------------------- statuts
 def derive_batch_status(batch: Batch, payouts: list[Payout]) -> str:
+    if batch.status == "CANCELLED":
+        return "CANCELLED"
     if batch.executed_at is None:
-        return "DRAFT"
+        return batch.status if batch.status == "VALIDATED" else "DRAFT"
     statuses = {p.status for p in payouts}
     if statuses & IN_FLIGHT:
         return "RUNNING"
@@ -270,20 +279,25 @@ def _map_bitnob_status(raw: str | None) -> str | None:
             "PENDING": "PROCESSING", "PROCESSING": "PROCESSING", "INITIATED": "INITIATED"}.get(s)
 
 
-async def _apply_status(repo: BatchRepository, p: Payout, new: str) -> bool:
+async def _apply_status(repo: BatchRepository, p: Payout, new: str, *,
+                        origin: str = "api", event_id: str | None = None) -> bool:
     if p.status == "SUCCESS" or p.status == new:
         return False
     if new in {"INITIATED", "PROCESSING"} and p.status in TERMINAL:
         return False
+    previous_status, previous_completed_at, previous_error = p.status, p.completed_at, p.error
     p.status = new
     if new == "SUCCESS":
         p.completed_at, p.error = now(), None
-    await repo.save_payout(p)
+    if not await repo.apply_payout_status(p, origin=origin, event_id=event_id):
+        p.status, p.completed_at, p.error = previous_status, previous_completed_at, previous_error
+        return False
     await refresh_batch_status(repo, p.batch_id)
     return True
 
 
-async def apply_webhook(repo: BatchRepository, event: str, data: dict) -> None:
+async def apply_webhook(repo: BatchRepository, event: str, data: dict,
+                        event_id: str | None = None) -> None:
     new = {"payouts.initialized": "INITIATED", "payouts.processing": "PROCESSING",
            "payouts.withdrawal.success": "SUCCESS",
            "payouts.withdrawal.expired": "EXPIRED"}.get(event)
@@ -294,7 +308,7 @@ async def apply_webhook(repo: BatchRepository, event: str, data: dict) -> None:
     if p is None:
         log.info("webhook %s : payout inconnu (%s)", event, data.get("reference"))
         return
-    await _apply_status(repo, p, new)
+    await _apply_status(repo, p, new, origin="webhook", event_id=event_id)
 
 
 async def refresh_from_bitnob(client: BitnobClient, repo: BatchRepository, batch_id: str) -> dict:
